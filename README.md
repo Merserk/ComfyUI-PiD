@@ -226,6 +226,33 @@ What each stage does:
 
 This does **not** provide a true subprocess-level VRAM reset, but it is a cleaner and more controllable stage-based design than a single giant decode step.
 
+### Subprocess sample stage
+
+For the lowest practical VRAM pressure inside ComfyUI, replace **PiD Sample** with **PiD Sample (Subprocess)**:
+
+```text
+PiD Prepare -> PiD Sample (Subprocess) -> PiD Finalize -> Save Image
+```
+
+This keeps the main ComfyUI process out of the heavy PiD sampling stage. The node saves the prepared CPU tensors to a temporary file, launches a separate Python process, runs PiD there, writes the output tensor back to CPU, then exits. When the subprocess exits, its CUDA context is destroyed, which is stronger than normal `empty_cache()` cleanup.
+
+Recommended first test:
+
+```text
+PiD Sample (Subprocess):
+sequential_offload = disabled
+aggressive_cleanup = true
+```
+
+If it still exceeds dedicated VRAM, try:
+
+```text
+sequential_offload = sequential_blocks
+```
+
+This can be much slower. If 1024 -> 4096 still fails, the PiD block activations themselves are too large for the available dedicated VRAM and you should use 960 -> 3840, 896 -> 3584, or 512 -> 2048.
+
+
 ## Troubleshooting
 
 ### Widget values shift after switching browser tabs

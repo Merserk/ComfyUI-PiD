@@ -1,5 +1,11 @@
 # Changelog
 
+## Precision update
+
+- Added a `precision` setting to **PiD Decode** with `bf16`, `fp16`, `fp8_e4m3fn`, and `fp8_e5m2`.
+- `bf16` remains the default. `fp16` is intended as a lower-precision / lower-VRAM option.
+- Added clear error handling for unsupported or failed FP8 casting.
+
 ## GitHub/Registry ready build
 
 - Added MIT `LICENSE`.

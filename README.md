@@ -139,6 +139,7 @@ pid_steps = 4
 scale = 1 or 2
 cfg_scale = 1.0
 sigma = 0.0
+precision = bf16
 auto_download = true
 unload_comfy_before_pid = true
 aggressive_cleanup = true
@@ -161,6 +162,19 @@ Do not connect VAE -> PiD Decode vae when baseline_image is already connected.
 ```
 
 The old direct `VAE -> PiD Decode vae` path still works, but pre-decoding the baseline image makes the PiD-only stage easier to isolate.
+
+### Precision setting
+
+`PiD Decode` now exposes a `precision` combo:
+
+```text
+bf16          recommended default
+fp16          lower precision / potentially lower VRAM
+fp8_e4m3fn    experimental
+fp8_e5m2      experimental
+```
+
+`bf16` is the safest default. `fp16` can sometimes reduce VRAM, depending on the GPU and PyTorch build. The FP8 modes are experimental: they may fail at runtime or produce lower quality depending on whether the installed PyTorch build and underlying PiD ops support float8.
 
 ## Notes
 
@@ -201,7 +215,7 @@ Check that:
 - `backbone` matches the latent you are feeding into PiD.
 - The latent channel count matches the selected backbone.
 - Your connected `VAE` can decode that latent, or `baseline_image` is the correct native baseline image.
-- Start with `sigma=0.0`, `cfg_scale=1.0`, `pid_steps=4`, and `scale=1` or `2`.
+- Start with `sigma=0.0`, `cfg_scale=1.0`, `pid_steps=4`, `precision=bf16`, and `scale=1` or `2`.
 
 ### VRAM or cudaMallocAsync errors
 

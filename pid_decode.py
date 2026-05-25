@@ -164,6 +164,7 @@ PID_BACKBONES: Dict[str, PiDBackbone] = {
 }
 
 BACKBONE_CHOICES = list(PID_BACKBONES.keys())
+PRECISION_CHOICES = ["bf16", "fp16", "fp8_e4m3fn", "fp8_e5m2"]
 
 _MODEL_CACHE: Dict[Tuple[str, str, str, str, str, bool, str], object] = {}
 
@@ -566,6 +567,63 @@ def _import_pid_loader(pid_dir: Path):
     return load_model_from_checkpoint
 
 
+def _model_dtype_for_precision(precision: str):
+    precision = str(precision or "bf16").strip().lower()
+    if precision == "bf16":
+        return torch.bfloat16
+    if precision == "fp16":
+        return torch.float16
+    if precision == "fp8_e4m3fn":
+        dtype = getattr(torch, "float8_e4m3fn", None)
+        if dtype is None:
+            raise PiDNodeError(
+                "This PyTorch build does not expose torch.float8_e4m3fn. "
+                "Use precision=bf16 or fp16 instead."
+            )
+        return dtype
+    if precision == "fp8_e5m2":
+        dtype = getattr(torch, "float8_e5m2", None)
+        if dtype is None:
+            raise PiDNodeError(
+                "This PyTorch build does not expose torch.float8_e5m2. "
+                "Use precision=bf16 or fp16 instead."
+            )
+        return dtype
+    raise PiDNodeError(
+        f"Unknown precision={precision!r}; expected one of {PRECISION_CHOICES}"
+    )
+
+
+def _activation_dtype_for_precision(precision: str):
+    precision = str(precision or "bf16").strip().lower()
+    if precision == "bf16":
+        return torch.bfloat16
+    if precision in ("fp16", "fp8_e4m3fn", "fp8_e5m2"):
+        return torch.float16
+    raise PiDNodeError(
+        f"Unknown precision={precision!r}; expected one of {PRECISION_CHOICES}"
+    )
+
+
+def _apply_model_precision(model, precision: str):
+    precision = str(precision or "bf16").strip().lower()
+    target_dtype = _model_dtype_for_precision(precision)
+    try:
+        model = model.to(dtype=target_dtype)
+    except Exception as exc:
+        if precision.startswith("fp8"):
+            raise PiDNodeError(
+                "PiD FP8 casting failed. FP8 is experimental and depends on the GPU, "
+                "PyTorch build, and whether the underlying PiD ops support float8. "
+                "Try precision=fp16 or precision=bf16 instead.\n\n"
+                f"Original error: {exc}"
+            ) from exc
+        raise PiDNodeError(
+            f"Could not cast PiD model to precision={precision!r}. Original error: {exc}"
+        ) from exc
+    return model
+
+
 def _load_pid_model(
     pid_dir: Path,
     backbone: str,
@@ -604,6 +662,7 @@ def _load_pid_model(
             strict=False,
             load_ema_to_reg=load_ema_to_reg,
         )
+    model = _apply_model_precision(model, dtype_choice)
     model.eval()
     _MODEL_CACHE[cache_key] = model
     return model
@@ -729,6 +788,7 @@ class PiDDecode:
                 "auto_download": ("BOOLEAN", {"default": True}),
                 "unload_comfy_before_pid": ("BOOLEAN", {"default": True}),
                 "aggressive_cleanup": ("BOOLEAN", {"default": True}),
+                "precision": (PRECISION_CHOICES, {"default": "bf16"}),
             },
             "optional": {
                 "vae": ("VAE",),
@@ -756,12 +816,17 @@ class PiDDecode:
         auto_download: bool,
         unload_comfy_before_pid: bool = True,
         aggressive_cleanup: bool = True,
+        precision: str = "bf16",
         vae=None,
         pid_source_dir: str = "",
         baseline_image=None,
     ):
         backbone = str(backbone).strip()
         pid_ckpt_type = str(pid_ckpt_type).strip()
+        precision = str(precision).strip().lower()
+
+        if precision not in PRECISION_CHOICES:
+            raise PiDNodeError(f"Unknown precision={precision!r}; expected one of {PRECISION_CHOICES}")
 
         if backbone not in PID_BACKBONES:
             raise PiDNodeError(f"Unknown backbone={backbone!r}; expected one of {BACKBONE_CHOICES}")
@@ -821,14 +886,15 @@ class PiDDecode:
             backbone=backbone,
             ckpt_type=pid_ckpt_type,
             checkpoint_path=checkpoint_path,
-            dtype_choice="bf16",
+            dtype_choice=precision,
             load_ema_to_reg=False,
         )
 
         b, _c, h, w = baseline_cpu.shape
         device = "cuda"
-        latent_bf16 = samples_cpu.to(device=device, dtype=torch.bfloat16)
-        baseline_neg1_1 = (baseline_cpu.to(device=device, dtype=torch.bfloat16) * 2.0) - 1.0
+        activation_dtype = _activation_dtype_for_precision(precision)
+        latent_inputs = samples_cpu.to(device=device, dtype=activation_dtype)
+        baseline_neg1_1 = (baseline_cpu.to(device=device, dtype=activation_dtype) * 2.0) - 1.0
         del samples_cpu
         del baseline_cpu
 
@@ -836,7 +902,7 @@ class PiDDecode:
         data_batch = {
             model.config.input_caption_key: [caption] * int(b),
             "LQ_video_or_image": baseline_neg1_1,
-            "LQ_latent": latent_bf16,
+            "LQ_latent": latent_inputs,
             "degrade_sigma": torch.full((int(b),), float(sigma), device=device, dtype=torch.float32),
         }
         infer_image_size = (int(h) * int(scale), int(w) * int(scale))
@@ -862,7 +928,7 @@ class PiDDecode:
             # After a CUDA allocator/internal-assert failure, the process may be in a bad state.
             # Still try to free memory and return a useful error to the ComfyUI UI.
             del data_batch
-            del latent_bf16
+            del latent_inputs
             del baseline_neg1_1
             _unload_pid_model(model, aggressive=True)
             del model
@@ -873,7 +939,7 @@ class PiDDecode:
 
         del out
         del data_batch
-        del latent_bf16
+        del latent_inputs
         del baseline_neg1_1
 
         _unload_pid_model(model, aggressive=bool(aggressive_cleanup))

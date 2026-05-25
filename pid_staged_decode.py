@@ -11,11 +11,6 @@ import tempfile
 import torch
 
 try:
-    from comfy import model_management
-except Exception:  # pragma: no cover
-    model_management = None
-
-try:
     from .pid_decode import (
         PID_BACKBONES,
         BACKBONE_CHOICES,
@@ -27,15 +22,9 @@ try:
         _ensure_checkpoint,
         _ensure_backbone_assets,
         _latent_samples,
-        _decode_baseline_with_comfy_vae,
-        _comfy_image_to_bchw_01,
+        _baseline_cpu_and_size,
         _free_cuda_memory,
-        _load_pid_model,
-        _normalize_pid_samples,
         _bchw_neg1_to_comfy_image,
-        _unload_pid_model,
-        _SequentialBlockOffloader,
-        _format_pid_runtime_error,
     )
 except ImportError:  # pragma: no cover
     from pid_decode import (
@@ -49,15 +38,9 @@ except ImportError:  # pragma: no cover
         _ensure_checkpoint,
         _ensure_backbone_assets,
         _latent_samples,
-        _decode_baseline_with_comfy_vae,
-        _comfy_image_to_bchw_01,
+        _baseline_cpu_and_size,
         _free_cuda_memory,
-        _load_pid_model,
-        _normalize_pid_samples,
         _bchw_neg1_to_comfy_image,
-        _unload_pid_model,
-        _SequentialBlockOffloader,
-        _format_pid_runtime_error,
     )
 
 
@@ -76,7 +59,8 @@ class PiDPreparedBatch:
     scale: int
     infer_image_size: Tuple[int, int]
     latent_cpu: torch.Tensor
-    baseline_cpu: torch.Tensor
+    baseline_cpu: Optional[torch.Tensor]
+    baseline_size: Tuple[int, int]
 
 
 @dataclass
@@ -148,24 +132,14 @@ class PiDPrepare:
                 f"Got {samples.shape[1]} channels."
             )
 
-        if baseline_image is None:
-            if vae is None:
-                raise PiDNodeError(
-                    "PiD Prepare needs a baseline image. Connect either a matching ComfyUI VAE "
-                    "or a pre-decoded baseline_image."
-                )
-            baseline_01 = _decode_baseline_with_comfy_vae(vae, samples, backbone)
-        else:
-            baseline_01 = _comfy_image_to_bchw_01(baseline_image)
-
-        if baseline_01.shape[0] != samples.shape[0]:
-            raise PiDNodeError(
-                f"Batch mismatch: latent batch={samples.shape[0]}, baseline batch={baseline_01.shape[0]}"
-            )
-
         samples_cpu = samples.detach().to("cpu").contiguous()
-        baseline_cpu = baseline_01.detach().to("cpu").contiguous()
-        b, _c, h, w = baseline_cpu.shape
+        baseline_cpu, baseline_size = _baseline_cpu_and_size(
+            samples,
+            backbone,
+            vae=vae,
+            baseline_image=baseline_image,
+        )
+        h, w = baseline_size
         infer_image_size = (int(h) * int(scale), int(w) * int(scale))
 
         if cleanup_after_prepare:
@@ -182,6 +156,7 @@ class PiDPrepare:
             infer_image_size=infer_image_size,
             latent_cpu=samples_cpu,
             baseline_cpu=baseline_cpu,
+            baseline_size=baseline_size,
         )
         return (prepared,)
 
@@ -195,7 +170,6 @@ class PiDSample:
                 "pid_steps": ("INT", {"default": 4, "min": 1, "max": 64, "step": 1}),
                 "cfg_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 20.0, "step": 0.1}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1}),
-                "unload_comfy_before_pid": ("BOOLEAN", {"default": True}),
                 "aggressive_cleanup": ("BOOLEAN", {"default": True}),
                 "sequential_offload": (SEQUENTIAL_OFFLOAD_CHOICES, {"default": "disabled"}),
             }
@@ -212,134 +186,11 @@ class PiDSample:
         pid_steps: int,
         cfg_scale: float,
         seed: int,
-        unload_comfy_before_pid: bool = True,
         aggressive_cleanup: bool = True,
         sequential_offload: str = "disabled",
     ):
         if not isinstance(prepared, PiDPreparedBatch):
             raise PiDNodeError("PiD Sample expected a PID_PREP object from PiD Prepare.")
-        sequential_offload = str(sequential_offload or "disabled").strip().lower()
-        if sequential_offload not in SEQUENTIAL_OFFLOAD_CHOICES:
-            raise PiDNodeError(
-                f"Unknown sequential_offload={sequential_offload!r}; expected one of {SEQUENTIAL_OFFLOAD_CHOICES}"
-            )
-        if not torch.cuda.is_available():
-            raise PiDNodeError("CUDA GPU is required for PiD.")
-
-        if unload_comfy_before_pid:
-            _free_cuda_memory(aggressive=bool(aggressive_cleanup))
-
-        pid_dir = Path(prepared.pid_dir)
-        checkpoint_path = Path(prepared.checkpoint_path)
-        model = _load_pid_model(
-            pid_dir=pid_dir,
-            backbone=prepared.backbone,
-            ckpt_type=prepared.pid_ckpt_type,
-            checkpoint_path=checkpoint_path,
-            dtype_choice="bf16",
-            load_ema_to_reg=False,
-        )
-
-        device = "cuda"
-        latent_inputs = prepared.latent_cpu.to(device=device, dtype=torch.bfloat16)
-        baseline_neg1_1 = (prepared.baseline_cpu.to(device=device, dtype=torch.bfloat16) * 2.0) - 1.0
-        batch = int(prepared.baseline_cpu.shape[0])
-
-        data_batch = {
-            model.config.input_caption_key: [prepared.caption] * batch,
-            "LQ_video_or_image": baseline_neg1_1,
-            "LQ_latent": latent_inputs,
-            "degrade_sigma": torch.full((batch,), float(prepared.sigma), device=device, dtype=torch.float32),
-        }
-
-        offloader = None
-        if sequential_offload != "disabled":
-            offloader = _SequentialBlockOffloader(model, sequential_offload, device=device)
-
-        if model_management is not None:
-            try:
-                model_management.throw_exception_if_processing_interrupted()
-            except Exception:
-                pass
-
-        _free_cuda_memory(aggressive=bool(aggressive_cleanup))
-        try:
-            with torch.inference_mode():
-                out = model.generate_samples_from_batch(
-                    data_batch,
-                    cfg_scale=float(cfg_scale),
-                    num_steps=int(pid_steps),
-                    seed=int(seed),
-                    shift=None,
-                    image_size=prepared.infer_image_size,
-                )
-        except Exception as exc:
-            if offloader is not None:
-                offloader.cleanup()
-            del data_batch
-            del latent_inputs
-            del baseline_neg1_1
-            _unload_pid_model(model, aggressive=True)
-            del model
-            raise _format_pid_runtime_error(
-                exc,
-                prepared.infer_image_size,
-                f"{prepared.backbone}/{prepared.pid_ckpt_type}",
-                int(prepared.scale),
-            ) from exc
-
-        if offloader is not None:
-            offloader.cleanup()
-
-        out = _normalize_pid_samples(out)
-        out_cpu = out.detach().to("cpu")
-
-        del out
-        del data_batch
-        del latent_inputs
-        del baseline_neg1_1
-        _unload_pid_model(model, aggressive=bool(aggressive_cleanup))
-        del model
-
-        sampled = PiDSampledBatch(
-            tensor_cpu=out_cpu,
-            backbone=prepared.backbone,
-            pid_ckpt_type=prepared.pid_ckpt_type,
-            infer_image_size=prepared.infer_image_size,
-        )
-        return (sampled,)
-
-
-class PiDSampleSubprocess:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "prepared": (PID_PREP_TYPE,),
-                "pid_steps": ("INT", {"default": 4, "min": 1, "max": 64, "step": 1}),
-                "cfg_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 20.0, "step": 0.1}),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1}),
-                "aggressive_cleanup": ("BOOLEAN", {"default": True}),
-                "sequential_offload": (SEQUENTIAL_OFFLOAD_CHOICES, {"default": "disabled"}),
-            }
-        }
-
-    RETURN_TYPES = (PID_SAMPLES_TYPE,)
-    RETURN_NAMES = ("sampled",)
-    FUNCTION = "sample"
-    CATEGORY = "PiD/Staged"
-
-    def sample(
-        self,
-        prepared: PiDPreparedBatch,
-        pid_steps: int,
-        cfg_scale: float,
-        seed: int,
-        aggressive_cleanup: bool = True,
-        sequential_offload: str = "disabled",
-    ):
-        if not isinstance(prepared, PiDPreparedBatch):
-            raise PiDNodeError("PiD Sample Subprocess expected a PID_PREP object from PiD Prepare.")
         sequential_offload = str(sequential_offload or "disabled").strip().lower()
         if sequential_offload not in SEQUENTIAL_OFFLOAD_CHOICES:
             raise PiDNodeError(
@@ -365,7 +216,12 @@ class PiDSampleSubprocess:
                 "scale": int(prepared.scale),
                 "infer_image_size": tuple(int(x) for x in prepared.infer_image_size),
                 "latent_cpu": prepared.latent_cpu.detach().to("cpu").contiguous(),
-                "baseline_cpu": prepared.baseline_cpu.detach().to("cpu").contiguous(),
+                "baseline_cpu": (
+                    prepared.baseline_cpu.detach().to("cpu").contiguous()
+                    if prepared.baseline_cpu is not None
+                    else None
+                ),
+                "baseline_size": tuple(int(x) for x in prepared.baseline_size),
             }
             torch.save(payload, str(input_path))
             del payload
@@ -460,7 +316,6 @@ class PiDDecodeStaged:
                 "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1}),
                 "auto_download": ("BOOLEAN", {"default": True}),
                 "cleanup_after_prepare": ("BOOLEAN", {"default": True}),
-                "unload_comfy_before_pid": ("BOOLEAN", {"default": True}),
                 "aggressive_cleanup": ("BOOLEAN", {"default": True}),
                 "sequential_offload": (SEQUENTIAL_OFFLOAD_CHOICES, {"default": "disabled"}),
             },
@@ -495,7 +350,6 @@ class PiDDecodeStaged:
             pid_steps=kwargs["pid_steps"],
             cfg_scale=kwargs["cfg_scale"],
             seed=kwargs["seed"],
-            unload_comfy_before_pid=kwargs.get("unload_comfy_before_pid", True),
             aggressive_cleanup=kwargs.get("aggressive_cleanup", True),
             sequential_offload=kwargs.get("sequential_offload", "disabled"),
         )[0]
@@ -505,7 +359,6 @@ class PiDDecodeStaged:
 NODE_CLASS_MAPPINGS = {
     "PiDPrepare": PiDPrepare,
     "PiDSample": PiDSample,
-    "PiDSampleSubprocess": PiDSampleSubprocess,
     "PiDFinalize": PiDFinalize,
     "PiDDecodeStaged": PiDDecodeStaged,
 }
@@ -513,7 +366,6 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PiDPrepare": "PiD Prepare",
     "PiDSample": "PiD Sample",
-    "PiDSampleSubprocess": "PiD Sample (Subprocess)",
     "PiDFinalize": "PiD Finalize",
     "PiDDecodeStaged": "PiD Decode (Staged)",
 }

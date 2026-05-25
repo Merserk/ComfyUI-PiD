@@ -18,6 +18,8 @@ from pid_decode import (  # noqa: E402
     _unload_pid_model,
     _free_cuda_memory,
     _SequentialBlockOffloader,
+    _make_pid_data_batch,
+    _generate_samples_low_vram,
 )
 
 
@@ -56,15 +58,14 @@ def main() -> int:
         )
 
         device = "cuda"
-        latent_inputs = payload["latent_cpu"].to(device=device, dtype=torch.bfloat16)
-        baseline_neg1_1 = (payload["baseline_cpu"].to(device=device, dtype=torch.bfloat16) * 2.0) - 1.0
-        batch = int(payload["baseline_cpu"].shape[0])
-        data_batch = {
-            model.config.input_caption_key: [str(payload.get("caption", ""))] * batch,
-            "LQ_video_or_image": baseline_neg1_1,
-            "LQ_latent": latent_inputs,
-            "degrade_sigma": torch.full((batch,), float(payload["sigma"]), device=device, dtype=torch.float32),
-        }
+        data_batch = _make_pid_data_batch(
+            model,
+            str(payload.get("caption", "")),
+            float(payload["sigma"]),
+            payload["latent_cpu"],
+            payload.get("baseline_cpu"),
+            device,
+        )
         infer_image_size = tuple(int(x) for x in payload["infer_image_size"])
 
         offloader = None
@@ -74,7 +75,8 @@ def main() -> int:
 
         _free_cuda_memory(aggressive=bool(args.aggressive_cleanup))
         with torch.inference_mode():
-            out = model.generate_samples_from_batch(
+            out = _generate_samples_low_vram(
+                model,
                 data_batch,
                 cfg_scale=float(args.cfg_scale),
                 num_steps=int(args.pid_steps),
@@ -101,8 +103,6 @@ def main() -> int:
         del out
         del out_cpu
         del data_batch
-        del latent_inputs
-        del baseline_neg1_1
         _unload_pid_model(model, aggressive=bool(args.aggressive_cleanup))
         del model
         _free_cuda_memory(aggressive=True)

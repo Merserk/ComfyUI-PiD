@@ -2,9 +2,9 @@
 
 ## 0.2.1
 
-- Added **PiD Sample (Subprocess)**. This runs the heavy PiD sampling stage in a separate Python process so the main ComfyUI process does not need to hold the PiD CUDA context during sampling.
+- Changed **PiD Sample** to run the heavy PiD sampling stage in a separate Python process so the main ComfyUI process does not need to hold the PiD CUDA context during sampling.
 - The subprocess writes the PiD output tensor back to CPU, exits, and lets CUDA release the subprocess memory.
-- Recommended for 4K experiments on 16GB GPUs when the in-process **PiD Sample** node spills into shared GPU memory or fails near the end.
+- Removed the duplicate in-process sample node from the ComfyUI node mappings.
 
 ## 0.2.0
 

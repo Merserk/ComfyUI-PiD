@@ -8,12 +8,13 @@ PiD is not a normal `.safetensors` VAE. NVIDIA's official path gives PiD a laten
 LATENT + baseline IMAGE + prompt + sigma -> PiD -> IMAGE
 ```
 
-The node can create the baseline through a connected ComfyUI `VAE`, or you can connect a pre-decoded `baseline_image` from another workflow component.
+The node can create the baseline through a connected ComfyUI `VAE`, or you can connect a pre-decoded `baseline_image` from another workflow component. For the current official latent-conditioned PiD checkpoints, the node can also infer the baseline size directly from the latent and skip the baseline image to reduce VRAM pressure.
 
 ## Node
 
 - **PiD Decode**: decodes a PiD-supported latent and outputs `IMAGE`.
 - **PiD Text Prompt**: one prompt box with outputs for both CLIP text encoding and PiD caption conditioning.
+- **PiD Prepare / PiD Sample / PiD Finalize**: staged low-VRAM flow. **PiD Sample** runs in a subprocess so CUDA memory is released when sampling finishes.
 
 There are no separate setup/download/unload nodes. PiD source, checkpoints, and required asset files are prepared lazily when **PiD Decode** runs with `auto_download=true`.
 
@@ -58,9 +59,8 @@ example_workflows/image_z_image_pid_baseline_offload.json
 After installing or cloning the node, restart ComfyUI and open **Workflow → Browse Workflow Templates**. The workflow should appear under the custom-node template category for this node. The template uses the lower-VRAM path:
 
 ```text
-KSampler LATENT -> VAEDecode -> PiD Decode baseline_image
 KSampler LATENT -> PiD Decode latent
-PiD Decode vae disconnected
+PiD Decode vae and baseline_image disconnected
 ```
 
 ## Registry Metadata
@@ -123,12 +123,11 @@ For Z-Image/Flux-style workflows:
 PiD Text Prompt text -> CLIP Text Encode
 PiD Text Prompt caption -> PiD Decode caption
 
-KSampler LATENT -> VAEDecode -> PiD Decode baseline_image
 KSampler LATENT -> PiD Decode latent
 PiD Decode image -> Save Image
 ```
 
-For the lowest VRAM peak, prefer connecting a pre-decoded `baseline_image` and leave the optional `vae` input on **PiD Decode** disconnected. The direct `VAE -> PiD Decode vae` path still works, but pre-decoding the baseline image makes the PiD-only stage easier to isolate.
+For the lowest VRAM peak on the official Z-Image/Flux/SD3-style checkpoints, leave both optional `vae` and `baseline_image` disconnected. The node infers the base image size from the latent grid and avoids the extra VAE decode/baseline tensor. If you need an exact externally decoded baseline size, connect a pre-decoded `baseline_image` and leave the optional `vae` input disconnected.
 
 Recommended first test settings on **PiD Decode**:
 
@@ -145,23 +144,22 @@ aggressive_cleanup = true
 sequential_offload = disabled
 ```
 
-For backbones where the matching VAE is not available as a ComfyUI `VAE`, connect a pre-decoded `baseline_image` instead.
+For nonstandard or future image-conditioned PiD checkpoints where the matching VAE is not available as a ComfyUI `VAE`, connect a pre-decoded `baseline_image` instead.
 
 ### VRAM offload behavior
 
-This version is optimized so **PiD Decode** keeps only CPU copies of the input latent and baseline image before the PiD stage. It then asks ComfyUI to unload the previously loaded Z-Image/CLIP/VAE models and clears CUDA cache before loading PiD. After the PiD image is converted back to a ComfyUI `IMAGE`, the PiD model is also removed from this node's private cache and moved off CUDA.
+This version is optimized so **PiD Decode** keeps only CPU copies of the input latent and optional baseline image before the PiD stage. It then asks ComfyUI to unload the previously loaded Z-Image/CLIP/VAE models and clears CUDA cache before loading PiD. During PiD sampling it offloads NVIDIA's Gemma text encoder and unused PiD VAE encoder after caption encoding, and it lazily computes PiD LQ conditioning features per block instead of storing every block's feature tensor at once. After the PiD image is converted back to a ComfyUI `IMAGE`, the PiD model is also removed from this node's private cache and moved off CUDA.
 
 For the lowest VRAM peak, prefer this workflow shape:
 
 ```text
-KSampler LATENT -> VAEDecode -> PiD Decode baseline_image
 KSampler LATENT -> PiD Decode latent
 PiD Text Prompt caption -> PiD Decode caption
 
-Do not connect VAE -> PiD Decode vae when baseline_image is already connected.
+Leave PiD Decode vae and baseline_image disconnected unless you explicitly need a pre-decoded baseline.
 ```
 
-The old direct `VAE -> PiD Decode vae` path still works, but pre-decoding the baseline image makes the PiD-only stage easier to isolate.
+The old direct `VAE -> PiD Decode vae` path still works, but it is no longer the lowest-VRAM path for the official latent-conditioned checkpoints.
 
 ### Sequential block offload
 
@@ -209,7 +207,6 @@ Recommended staged wiring for lower VRAM:
 
 ```text
 KSampler LATENT -> PiD Prepare latent
-KSampler LATENT -> VAEDecode -> PiD Prepare baseline_image
 PiD Text Prompt -> PiD Prepare caption
 
 PiD Prepare -> PiD Sample
@@ -219,27 +216,17 @@ PiD Finalize -> Save Image
 
 What each stage does:
 
-- **PiD Prepare**: resolves/checks PiD assets, decodes the baseline image if needed, and stores the latent + baseline on CPU. It can also run cleanup immediately after preparation.
-- **PiD Sample**: loads the PiD model, optionally enables sequential block offload, runs PiD, then unloads the PiD model again.
+- **PiD Prepare**: resolves/checks PiD assets, decodes the baseline image only if connected/needed, and stores the latent plus optional baseline on CPU. If no baseline is connected, it infers the base image size from the latent. It can also run cleanup immediately after preparation.
+- **PiD Sample**: saves the prepared CPU tensors to a temporary file, launches a separate Python process, runs PiD there with text/VAE offload and lazy LQ features, writes the output tensor back to CPU, then exits. When the subprocess exits, its CUDA context is destroyed.
 - **PiD Finalize**: converts the CPU PiD tensor into a normal ComfyUI IMAGE output.
 - **PiD Decode (Staged)**: convenience wrapper that runs the three stages internally.
 
-This does **not** provide a true subprocess-level VRAM reset, but it is a cleaner and more controllable stage-based design than a single giant decode step.
-
-### Subprocess sample stage
-
-For the lowest practical VRAM pressure inside ComfyUI, replace **PiD Sample** with **PiD Sample (Subprocess)**:
-
-```text
-PiD Prepare -> PiD Sample (Subprocess) -> PiD Finalize -> Save Image
-```
-
-This keeps the main ComfyUI process out of the heavy PiD sampling stage. The node saves the prepared CPU tensors to a temporary file, launches a separate Python process, runs PiD there, writes the output tensor back to CPU, then exits. When the subprocess exits, its CUDA context is destroyed, which is stronger than normal `empty_cache()` cleanup.
+This keeps the main ComfyUI process out of the heavy PiD sampling stage, which is stronger than normal `empty_cache()` cleanup.
 
 Recommended first test:
 
 ```text
-PiD Sample (Subprocess):
+PiD Sample:
 sequential_offload = disabled
 aggressive_cleanup = true
 ```
@@ -250,7 +237,7 @@ If it still exceeds dedicated VRAM, try:
 sequential_offload = sequential_blocks
 ```
 
-This can be much slower. If 1024 -> 4096 still fails, the PiD block activations themselves are too large for the available dedicated VRAM and you should use 960 -> 3840, 896 -> 3584, or 512 -> 2048.
+This can be much slower. If 1024 -> 4096 still fails after using **PiD Sample** with no connected baseline/VAE, the PiD block activations themselves are too large for the available dedicated VRAM and you should use 960 -> 3840, 896 -> 3584, or 512 -> 2048.
 
 
 ## Troubleshooting
@@ -283,12 +270,12 @@ Check that:
 
 - `backbone` matches the latent you are feeding into PiD.
 - The latent channel count matches the selected backbone.
-- Your connected `VAE` can decode that latent, or `baseline_image` is the correct native baseline image.
+- If you connect a `VAE` or `baseline_image`, it matches that latent. For the official latent-conditioned checkpoints, both can stay disconnected.
 - Start with `sigma=0.0`, `cfg_scale=1.0`, `pid_steps=4`, and `scale=1` or `2`.
 
 ### VRAM or cudaMallocAsync errors
 
-This build unloads ComfyUI models before PiD and unloads PiD again after the decode. If VRAM is still high, check the workflow first: connect a pre-decoded `baseline_image` into **PiD Decode** and disconnect the optional `vae` input on **PiD Decode**. If the 4K path is still just over the limit, try `sequential_offload=sequential_blocks`, then `sequential_blocks_aggressive`.
+This build unloads ComfyUI models before PiD and unloads PiD again after the decode. If VRAM is still high, check the workflow first: leave both optional `vae` and `baseline_image` disconnected, and use the staged **PiD Sample** node. If the 4K path is still just over the limit, try `sequential_offload=sequential_blocks`, then `sequential_blocks_aggressive`.
 
 For 16GB GPUs, start with one of these:
 

@@ -60,6 +60,7 @@ class PiDBackbone:
     registry_key: str
     latent_channels: int
     default_scale: int
+    latent_downscale: int
     ckpt_types: Tuple[str, ...]
     aux_files: Tuple[str, ...] = ()
     needs_flux_ae: bool = False
@@ -121,13 +122,14 @@ PID_CKPTS: Dict[Tuple[str, str], PiDCheckpoint] = {
 
 
 PID_BACKBONES: Dict[str, PiDBackbone] = {
-    "zimage": PiDBackbone("Z-Image", "zimage", 16, 4, ("2k", "2kto4k"), needs_flux_ae=True),
-    "flux": PiDBackbone("Flux", "flux", 16, 4, ("2k", "2kto4k"), needs_flux_ae=True),
+    "zimage": PiDBackbone("Z-Image", "zimage", 16, 4, 8, ("2k", "2kto4k"), needs_flux_ae=True),
+    "flux": PiDBackbone("Flux", "flux", 16, 4, 8, ("2k", "2kto4k"), needs_flux_ae=True),
     "flux2": PiDBackbone(
         "Flux2",
         "flux2",
         128,
         4,
+        16,
         ("2k", "2kto4k"),
         aux_files=("checkpoints/flux2_ae.safetensors",),
     ),
@@ -136,6 +138,7 @@ PID_BACKBONES: Dict[str, PiDBackbone] = {
         "sd3",
         16,
         4,
+        8,
         ("2k", "2kto4k"),
         aux_files=("checkpoints/sd3_vae/vae/diffusion_pytorch_model.safetensors",),
     ),
@@ -144,6 +147,7 @@ PID_BACKBONES: Dict[str, PiDBackbone] = {
         "rae",
         768,
         4,
+        16,
         ("2k",),
         aux_files=(
             "checkpoints/rae/decoders/dinov2/wReg_base/ViTXL_n08_i512/model.pt",
@@ -155,6 +159,7 @@ PID_BACKBONES: Dict[str, PiDBackbone] = {
         "scale_rae",
         1152,
         8,
+        16,
         ("2k",),
         aux_files=(
             "checkpoints/scale_rae/decoder/XL_decoder_config.json",
@@ -629,6 +634,222 @@ def _unload_pid_model(model: object, aggressive: bool = True) -> None:
     _free_cuda_memory(aggressive=aggressive)
 
 
+def _pid_lq_condition_type(model: object) -> str:
+    config = getattr(model, "config", None)
+    return str(getattr(config, "lq_condition_type", "latent") or "latent").strip().lower()
+
+
+def _pid_uses_lq_image(model: object) -> bool:
+    return _pid_lq_condition_type(model) in ("image", "image_latent")
+
+
+def _pid_uses_lq_latent(model: object) -> bool:
+    return _pid_lq_condition_type(model) in ("latent", "image_latent")
+
+
+def _move_module_like_to_cpu(obj: object) -> None:
+    if obj is None:
+        return
+    nested_model = getattr(obj, "model", None)
+    nested_nested_model = getattr(nested_model, "model", None)
+    for target in (obj, nested_model, nested_nested_model):
+        if target is None:
+            continue
+        try:
+            to = getattr(target, "to", None)
+            if callable(to):
+                to("cpu")
+        except Exception:
+            pass
+
+
+def _offload_unused_pid_conditioners(model: object, include_vae: bool = True) -> None:
+    _move_module_like_to_cpu(getattr(model, "text_encoder", None))
+    null_caption = getattr(model, "_null_caption_embs", None)
+    if isinstance(null_caption, torch.Tensor):
+        try:
+            setattr(model, "_null_caption_embs", null_caption.cpu())
+        except Exception:
+            pass
+    if include_vae:
+        _move_module_like_to_cpu(getattr(model, "vae_encoder", None))
+    _free_cuda_memory(aggressive=True)
+
+
+class _LazyLQFeatureList:
+    """Compute PiD LQ projection heads just-in-time instead of keeping all heads."""
+
+    def __init__(self, tokens: torch.Tensor, output_heads, pit_head):
+        self.tokens = tokens
+        self.output_heads = output_heads
+        self.pit_head = pit_head
+
+    def __len__(self) -> int:
+        return len(self.output_heads) + (1 if self.pit_head is not None else 0)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        length = len(self)
+        if idx < 0:
+            idx += length
+        if idx < 0 or idx >= length:
+            raise IndexError(idx)
+        if idx < len(self.output_heads):
+            return self.output_heads[idx](self.tokens)
+        if self.pit_head is None:
+            raise IndexError(idx)
+        return self.pit_head(self.tokens)
+
+
+def _enable_lazy_lq_projection(model: object) -> None:
+    """Patch PiD's LQ projector so 4K runs do not cache every block feature."""
+    net = getattr(model, "net", None)
+    lq_proj = getattr(net, "lq_proj", None)
+    if lq_proj is None or getattr(lq_proj, "_comfy_pid_lazy_lq", False):
+        return
+    if getattr(net, "_cp_group", None) is not None:
+        return
+    needed = (
+        "image_conv",
+        "latent_proj",
+        "merge",
+        "output_heads",
+        "pit_head",
+        "_align_image_to_patch_grid",
+        "_align_latent_to_patch_grid",
+    )
+    if any(not hasattr(lq_proj, name) for name in needed):
+        return
+
+    def lazy_forward(
+        lq_video_or_image=None,
+        lq_latent=None,
+        target_pH: int = 0,
+        target_pW: int = 0,
+    ):
+        if target_pH <= 0 or target_pW <= 0:
+            raise AssertionError("Must provide target_pH and target_pW")
+
+        features = []
+        if lq_proj.image_conv is not None and lq_video_or_image is not None:
+            features.append(lq_proj._align_image_to_patch_grid(lq_video_or_image, target_pH, target_pW))
+        if lq_proj.latent_proj is not None and lq_latent is not None:
+            features.append(lq_proj._align_latent_to_patch_grid(lq_latent, target_pH, target_pW))
+
+        if len(features) == 2 and lq_proj.merge is not None:
+            merged = lq_proj.merge(torch.cat(features, dim=1))
+        elif len(features) == 1:
+            merged = features[0]
+        else:
+            ref = lq_video_or_image if lq_video_or_image is not None else lq_latent
+            if ref is None:
+                raise PiDNodeError("PiD low-VRAM LQ projection received neither LQ image nor latent.")
+            b, device, dtype = ref.shape[0], ref.device, ref.dtype
+            hidden_dim = int(getattr(lq_proj, "hidden_dim", 0) or getattr(lq_proj, "out_dim", 0))
+            tokens = torch.zeros(
+                b,
+                int(target_pH) * int(target_pW),
+                hidden_dim,
+                device=device,
+                dtype=dtype,
+            )
+            return _LazyLQFeatureList(tokens, lq_proj.output_heads, lq_proj.pit_head)
+
+        tokens = merged.flatten(2).transpose(1, 2)
+        return _LazyLQFeatureList(tokens, lq_proj.output_heads, lq_proj.pit_head)
+
+    lq_proj.forward = lazy_forward
+    lq_proj._comfy_pid_lazy_lq = True
+
+
+def _generate_samples_low_vram(model: object, data_batch: dict, **kwargs):
+    """Run PiD with text/VAE offload and lazy LQ conditioning."""
+    _enable_lazy_lq_projection(model)
+
+    batch = dict(data_batch)
+    condition_type = _pid_lq_condition_type(model)
+    if condition_type == "latent":
+        batch.pop("LQ_video_or_image", None)
+    elif condition_type == "image":
+        batch.pop("LQ_latent", None)
+
+    original_encode = getattr(model, "_encode_text_raw", None)
+    if not callable(original_encode):
+        return model.generate_samples_from_batch(batch, **kwargs)
+
+    def encode_then_offload(captions):
+        text_encoder = getattr(model, "text_encoder", None)
+        try:
+            to = getattr(text_encoder, "to", None)
+            if callable(to):
+                to("cuda")
+        except Exception:
+            pass
+        result = original_encode(captions)
+        _offload_unused_pid_conditioners(model, include_vae="LQ_latent" in batch)
+        return result
+
+    try:
+        setattr(model, "_encode_text_raw", encode_then_offload)
+        return model.generate_samples_from_batch(batch, **kwargs)
+    finally:
+        try:
+            setattr(model, "_encode_text_raw", original_encode)
+        except Exception:
+            pass
+
+
+def _make_pid_data_batch(
+    model: object,
+    caption: str,
+    sigma: float,
+    latent_cpu: torch.Tensor,
+    baseline_cpu: Optional[torch.Tensor],
+    device: str,
+) -> dict:
+    # Free heavyweight PiD conditioners before moving LQ inputs onto CUDA. The
+    # text encoder is moved back only for caption encoding inside the sampler.
+    _offload_unused_pid_conditioners(model, include_vae=_pid_uses_lq_latent(model))
+    batch = int(latent_cpu.shape[0])
+    data_batch = {
+        getattr(model.config, "input_caption_key", "caption"): [caption or ""] * batch,
+        "degrade_sigma": torch.full((batch,), float(sigma), device=device, dtype=torch.float32),
+    }
+    if _pid_uses_lq_latent(model):
+        data_batch["LQ_latent"] = latent_cpu.to(device=device, dtype=torch.bfloat16)
+    if _pid_uses_lq_image(model):
+        if baseline_cpu is None:
+            raise PiDNodeError(
+                "This PiD checkpoint requires LQ image conditioning. Connect baseline_image or a matching VAE."
+            )
+        data_batch["LQ_video_or_image"] = (baseline_cpu.to(device=device, dtype=torch.bfloat16) * 2.0) - 1.0
+    return data_batch
+
+
+def _infer_baseline_size_from_latent(samples: torch.Tensor, backbone: str) -> Tuple[int, int]:
+    info = PID_BACKBONES.get(backbone, PID_BACKBONES["zimage"])
+    return int(samples.shape[-2]) * int(info.latent_downscale), int(samples.shape[-1]) * int(info.latent_downscale)
+
+
+def _baseline_cpu_and_size(
+    samples: torch.Tensor,
+    backbone: str,
+    vae=None,
+    baseline_image=None,
+) -> Tuple[Optional[torch.Tensor], Tuple[int, int]]:
+    if baseline_image is None and vae is None:
+        return None, _infer_baseline_size_from_latent(samples, backbone)
+    if baseline_image is None:
+        baseline_01 = _decode_baseline_with_comfy_vae(vae, samples, backbone)
+    else:
+        baseline_01 = _comfy_image_to_bchw_01(baseline_image)
+    if baseline_01.shape[0] != samples.shape[0]:
+        raise PiDNodeError(
+            f"Batch mismatch: latent batch={samples.shape[0]}, baseline batch={baseline_01.shape[0]}"
+        )
+    baseline_cpu = baseline_01.detach().to("cpu").contiguous()
+    return baseline_cpu, (int(baseline_cpu.shape[-2]), int(baseline_cpu.shape[-1]))
+
+
 
 class _SequentialBlockOffloader:
     """Best-effort sequential CPU offload for PiD's largest DiT block stack.
@@ -916,28 +1137,17 @@ class PiDDecode:
                 f"Got {samples.shape[1]} channels."
             )
 
-        if baseline_image is None:
-            if vae is None:
-                raise PiDNodeError(
-                    "PiD needs a baseline image. Connect either a matching ComfyUI VAE "
-                    "or a pre-decoded baseline_image."
-                )
-            baseline_01 = _decode_baseline_with_comfy_vae(vae, samples, backbone)
-        else:
-            baseline_01 = _comfy_image_to_bchw_01(baseline_image)
-
-        if baseline_01.shape[0] != samples.shape[0]:
-            raise PiDNodeError(
-                f"Batch mismatch: latent batch={samples.shape[0]}, baseline batch={baseline_01.shape[0]}"
-            )
-
         # Keep only CPU copies before unloading Z-Image / CLIP / VAE.
         # This prevents upstream CUDA tensors or a connected ComfyUI VAE object from
         # keeping VRAM alive during the PiD-only stage.
         samples_cpu = samples.detach().to("cpu").contiguous()
-        baseline_cpu = baseline_01.detach().to("cpu").contiguous()
+        baseline_cpu, baseline_size = _baseline_cpu_and_size(
+            samples,
+            backbone,
+            vae=vae,
+            baseline_image=baseline_image,
+        )
         del samples
-        del baseline_01
         vae = None
         baseline_image = None
         latent = None
@@ -959,20 +1169,13 @@ class PiDDecode:
             load_ema_to_reg=False,
         )
 
-        b, _c, h, w = baseline_cpu.shape
         device = "cuda"
-        latent_bf16 = samples_cpu.to(device=device, dtype=torch.bfloat16)
-        baseline_neg1_1 = (baseline_cpu.to(device=device, dtype=torch.bfloat16) * 2.0) - 1.0
-        del samples_cpu
-        del baseline_cpu
 
         caption = caption or ""
-        data_batch = {
-            model.config.input_caption_key: [caption] * int(b),
-            "LQ_video_or_image": baseline_neg1_1,
-            "LQ_latent": latent_bf16,
-            "degrade_sigma": torch.full((int(b),), float(sigma), device=device, dtype=torch.float32),
-        }
+        data_batch = _make_pid_data_batch(model, caption, float(sigma), samples_cpu, baseline_cpu, device)
+        del samples_cpu
+        del baseline_cpu
+        h, w = baseline_size
         infer_image_size = (int(h) * int(scale), int(w) * int(scale))
 
         if model_management is not None:
@@ -987,7 +1190,8 @@ class PiDDecode:
             offloader = _SequentialBlockOffloader(model, sequential_offload, device=device)
         try:
             with torch.inference_mode():
-                out = model.generate_samples_from_batch(
+                out = _generate_samples_low_vram(
+                    model,
                     data_batch,
                     cfg_scale=float(cfg_scale),
                     num_steps=int(pid_steps),
@@ -1002,8 +1206,6 @@ class PiDDecode:
                 offloader.cleanup()
                 offloader = None
             del data_batch
-            del latent_bf16
-            del baseline_neg1_1
             _unload_pid_model(model, aggressive=True)
             del model
             raise _format_pid_runtime_error(exc, infer_image_size, f"{backbone}/{pid_ckpt_type}", int(scale)) from exc
@@ -1013,8 +1215,6 @@ class PiDDecode:
 
         del out
         del data_batch
-        del latent_bf16
-        del baseline_neg1_1
 
         if offloader is not None:
             offloader.cleanup()

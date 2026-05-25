@@ -704,6 +704,12 @@ class PiDDecode:
             },
             "optional": {
                 "auto_settings": ("PID_SETTINGS",),
+                "backbone_in": ("STRING", {"forceInput": True}),
+                "pid_ckpt_type_in": ("STRING", {"forceInput": True}),
+                "pid_steps_in": ("INT", {"forceInput": True}),
+                "scale_in": ("INT", {"forceInput": True}),
+                "cfg_scale_in": ("FLOAT", {"forceInput": True}),
+                "sigma_in": ("FLOAT", {"forceInput": True}),
                 "caption": ("STRING", {"forceInput": True}),
                 "vae": ("VAE",),
                 "pid_source_dir": ("STRING", {"default": "", "multiline": False}),
@@ -731,6 +737,12 @@ class PiDDecode:
         unload_comfy_before_pid: bool = True,
         aggressive_cleanup: bool = True,
         auto_settings=None,
+        backbone_in: str = "",
+        pid_ckpt_type_in: str = "",
+        pid_steps_in=None,
+        scale_in=None,
+        cfg_scale_in=None,
+        sigma_in=None,
         caption: str = "",
         vae=None,
         pid_source_dir: str = "",
@@ -745,6 +757,19 @@ class PiDDecode:
             sigma = float(auto_settings.get("sigma", sigma))
             unload_comfy_before_pid = bool(auto_settings.get("unload_comfy_before_pid", unload_comfy_before_pid))
             aggressive_cleanup = bool(auto_settings.get("aggressive_cleanup", aggressive_cleanup))
+
+        if backbone_in:
+            backbone = str(backbone_in)
+        if pid_ckpt_type_in:
+            pid_ckpt_type = str(pid_ckpt_type_in)
+        if pid_steps_in is not None:
+            pid_steps = int(pid_steps_in)
+        if scale_in is not None:
+            scale = int(scale_in)
+        if cfg_scale_in is not None:
+            cfg_scale = float(cfg_scale_in)
+        if sigma_in is not None:
+            sigma = float(sigma_in)
 
         if backbone not in PID_BACKBONES:
             raise PiDNodeError(f"Unknown backbone={backbone!r}; expected one of {BACKBONE_CHOICES}")

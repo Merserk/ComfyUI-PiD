@@ -75,8 +75,17 @@ class PiDAutoSettings:
             }
         }
 
-    RETURN_TYPES = ("PID_SETTINGS", "STRING")
-    RETURN_NAMES = ("auto_settings", "status")
+    RETURN_TYPES = ("PID_SETTINGS", "STRING", "STRING", "INT", "INT", "FLOAT", "FLOAT", "STRING")
+    RETURN_NAMES = (
+        "auto_settings",
+        "backbone",
+        "pid_ckpt_type",
+        "pid_steps",
+        "scale",
+        "cfg_scale",
+        "sigma",
+        "status",
+    )
     FUNCTION = "build"
     CATEGORY = "PiD"
 
@@ -134,7 +143,16 @@ class PiDAutoSettings:
         )
         if notes:
             status += "\n" + "\n".join(notes)
-        return (settings, status)
+        return (
+            settings,
+            str(settings["backbone"]),
+            str(settings["pid_ckpt_type"]),
+            int(settings["pid_steps"]),
+            int(settings["scale"]),
+            float(settings["cfg_scale"]),
+            float(settings["sigma"]),
+            status,
+        )
 
 
 NODE_CLASS_MAPPINGS = {

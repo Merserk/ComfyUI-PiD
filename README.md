@@ -94,6 +94,14 @@ sampler LATENT
         -> PiD Auto Settings
         -> PiD Decode auto_settings
 
+Optional visible wiring:
+PiD Auto Settings backbone -> PiD Decode backbone_in
+PiD Auto Settings pid_ckpt_type -> PiD Decode pid_ckpt_type_in
+PiD Auto Settings pid_steps -> PiD Decode pid_steps_in
+PiD Auto Settings scale -> PiD Decode scale_in
+PiD Auto Settings cfg_scale -> PiD Decode cfg_scale_in
+PiD Auto Settings sigma -> PiD Decode sigma_in
+
 sampler LATENT
         + matching ComfyUI VAE
         + positive prompt text
@@ -113,7 +121,7 @@ base_width = 0
 base_height = 0
 
 PiD Decode:
-connect auto_settings from PiD Auto Settings
+connect auto_settings from PiD Auto Settings, or connect the individual settings outputs
 connect caption from PiD Text Prompt
 auto_download = true
 ```

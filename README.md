@@ -58,7 +58,7 @@ Do not download PiD model weights during install. The node downloads only what i
 This repository includes a ComfyUI template workflow at:
 
 ```text
-example_workflows/image_z_image_pid_baseline_offload.json
+example_workflows/image_z_image_pid.json
 ```
 
 After installing or cloning the node, restart ComfyUI and open **Workflow → Browse Workflow Templates**. The workflow should appear under the custom-node template category for this node. The template uses the lower-VRAM path:

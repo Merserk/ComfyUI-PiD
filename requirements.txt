@@ -1,0 +1,23 @@
+# NVIDIA PiD utility/runtime dependencies for the diffusers backbones.
+# ComfyUI usually already provides torch; do not install torch from here.
+hydra-core==1.3.2
+omegaconf==2.3.0
+attrs
+einops
+loguru
+termcolor
+fvcore
+iopath
+pynvml
+wandb
+imageio
+opencv-python-headless
+pandas
+safetensors
+huggingface-hub>=1.0
+sentencepiece
+boto3
+botocore
+accelerate
+transformers>=4.57.0
+diffusers>=0.37.0

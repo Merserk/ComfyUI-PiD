@@ -11,10 +11,15 @@ import tempfile
 import torch
 
 try:
-    from .pid_decode import SEQUENTIAL_OFFLOAD_CHOICES, PiDNodeError, _free_cuda_memory
+    from .pid_decode import (
+        PID_WEIGHT_PRECISION_CHOICES,
+        SEQUENTIAL_OFFLOAD_CHOICES,
+        PiDNodeError,
+        _free_cuda_memory,
+    )
     from .pid_prepare import PID_PREP_TYPE, PiDPreparedBatch
 except ImportError:  # pragma: no cover
-    from pid_decode import SEQUENTIAL_OFFLOAD_CHOICES, PiDNodeError, _free_cuda_memory
+    from pid_decode import PID_WEIGHT_PRECISION_CHOICES, SEQUENTIAL_OFFLOAD_CHOICES, PiDNodeError, _free_cuda_memory
     from pid_prepare import PID_PREP_TYPE, PiDPreparedBatch
 
 
@@ -29,6 +34,43 @@ class PiDSampledBatch:
     infer_image_size: Tuple[int, int]
 
 
+def _build_pid_subprocess_command(
+    runner: Path,
+    input_path: Path,
+    output_path: Path,
+    pid_steps: int,
+    cfg_scale: float,
+    seed: int,
+    sequential_offload: str,
+    pid_weight_precision: str,
+    pixel_chunk_patches: int,
+    aggressive_cleanup: bool,
+):
+    cmd = [
+        sys.executable or "python",
+        str(runner),
+        "--input",
+        str(input_path),
+        "--output",
+        str(output_path),
+        "--pid-steps",
+        str(int(pid_steps)),
+        "--cfg-scale",
+        str(float(cfg_scale)),
+        "--seed",
+        str(int(seed)),
+        "--sequential-offload",
+        str(sequential_offload),
+        "--pid-weight-precision",
+        str(pid_weight_precision),
+        "--pixel-chunk-patches",
+        str(int(pixel_chunk_patches)),
+    ]
+    if aggressive_cleanup:
+        cmd.append("--aggressive-cleanup")
+    return cmd
+
+
 class PiDSample:
     @classmethod
     def INPUT_TYPES(cls):
@@ -39,7 +81,9 @@ class PiDSample:
                 "cfg_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 20.0, "step": 0.1}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1}),
                 "aggressive_cleanup": ("BOOLEAN", {"default": True}),
-                "sequential_offload": (SEQUENTIAL_OFFLOAD_CHOICES, {"default": "disabled"}),
+                "sequential_offload": (SEQUENTIAL_OFFLOAD_CHOICES, {"default": "auto_low_vram"}),
+                "pid_weight_precision": (PID_WEIGHT_PRECISION_CHOICES, {"default": "fp32_compatible"}),
+                "pixel_chunk_patches": ("INT", {"default": 0, "min": 0, "max": 65536, "step": 1024}),
             }
         }
 
@@ -55,15 +99,26 @@ class PiDSample:
         cfg_scale: float,
         seed: int,
         aggressive_cleanup: bool = True,
-        sequential_offload: str = "disabled",
+        sequential_offload: str = "auto_low_vram",
+        pid_weight_precision: str = "fp32_compatible",
+        pixel_chunk_patches: int = 0,
     ):
         if not isinstance(prepared, PiDPreparedBatch):
             raise PiDNodeError("PiD Sample expected a PID_PREP object from PiD Prepare.")
-        sequential_offload = str(sequential_offload or "disabled").strip().lower()
+        sequential_offload = str(sequential_offload or "auto_low_vram").strip().lower()
         if sequential_offload not in SEQUENTIAL_OFFLOAD_CHOICES:
             raise PiDNodeError(
                 f"Unknown sequential_offload={sequential_offload!r}; expected one of {SEQUENTIAL_OFFLOAD_CHOICES}"
             )
+        pid_weight_precision = str(pid_weight_precision or "fp32_compatible").strip().lower()
+        if pid_weight_precision not in PID_WEIGHT_PRECISION_CHOICES:
+            raise PiDNodeError(
+                f"Unknown pid_weight_precision={pid_weight_precision!r}; "
+                f"expected one of {PID_WEIGHT_PRECISION_CHOICES}"
+            )
+        pixel_chunk_patches = int(pixel_chunk_patches)
+        if pixel_chunk_patches < 0:
+            raise PiDNodeError("pixel_chunk_patches must be zero (automatic) or a positive integer.")
 
         _free_cuda_memory(aggressive=True)
         runner = Path(__file__).resolve().with_name("pid_subprocess_runner.py")
@@ -96,24 +151,18 @@ class PiDSample:
             del payload
             _free_cuda_memory(aggressive=True)
 
-            cmd = [
-                sys.executable or "python",
-                str(runner),
-                "--input",
-                str(input_path),
-                "--output",
-                str(output_path),
-                "--pid-steps",
-                str(int(pid_steps)),
-                "--cfg-scale",
-                str(float(cfg_scale)),
-                "--seed",
-                str(int(seed)),
-                "--sequential-offload",
-                sequential_offload,
-            ]
-            if aggressive_cleanup:
-                cmd.append("--aggressive-cleanup")
+            cmd = _build_pid_subprocess_command(
+                runner=runner,
+                input_path=input_path,
+                output_path=output_path,
+                pid_steps=pid_steps,
+                cfg_scale=cfg_scale,
+                seed=seed,
+                sequential_offload=sequential_offload,
+                pid_weight_precision=pid_weight_precision,
+                pixel_chunk_patches=pixel_chunk_patches,
+                aggressive_cleanup=bool(aggressive_cleanup),
+            )
 
             env = os.environ.copy()
             node_dir = str(Path(__file__).resolve().parent)

@@ -453,7 +453,7 @@
       "outputs": [],
       "properties": {},
       "widgets_values": [
-        "PiD Decode - Simple Cheat Sheet\n\nBest 2K quality mode\nBase generation: 512 x 512\nPiD checkpoint: 2k\nScale: 4\nFinal output: 2048 x 2048\n\nBest 4K quality mode\nBase generation: 1024 x 1024\nPiD checkpoint: 2kto4k\nScale: 4\nFinal output: 4096 x 4096\n\nLowest-VRAM staged connection\nKSampler LATENT -> PiD Prepare latent\nPrompt caption -> PiD Prepare caption\nLeave PiD Prepare vae and baseline_image disconnected.\nPiD Prepare -> PiD Sample -> PiD Finalize\n\nPiD Sample runs the heavy PiD pass in a subprocess, so its CUDA context is destroyed after sampling.\n\nThe node infers the 1024px baseline size from the latent grid for official latent-conditioned PiD checkpoints. Connect baseline_image only if you need a specific external baseline size.\n\nIf 1024 -> 4096 still runs out of VRAM on 16GB, try sequential_blocks, then use 960 -> 3840 or 896 -> 3584."
+        "PiD Decode - Simple Cheat Sheet\n\nBest 2K quality mode\nBase generation: 512 x 512\nPiD checkpoint: 2k\nScale: 4\nFinal output: 2048 x 2048\n\nBest 4K quality mode\nBase generation: 1024 x 1024\nPiD checkpoint: 2kto4k\nScale: 4\nFinal output: 4096 x 4096\n\nLowest-VRAM staged connection\nKSampler LATENT -> PiD Prepare latent\nPrompt caption -> PiD Prepare caption\nLeave PiD Prepare vae and baseline_image disconnected.\nPiD Prepare -> PiD Sample -> PiD Finalize\n\nPiD Sample runs the heavy PiD pass in a subprocess, so its CUDA context is destroyed after sampling.\n\nThe node infers the 1024px baseline size from the latent grid for official latent-conditioned PiD checkpoints. Connect baseline_image only if you need a specific external baseline size.\n\nUse auto_low_vram, fp32_compatible, and pixel_chunk_patches=0. At 4K, low-VRAM mode keeps about 1 GiB of positional data in system RAM. If 1024 -> 4096 still runs out of VRAM, set pixel_chunk_patches=2048, then use 960 -> 3840 or 896 -> 3584."
       ],
       "color": "#432",
       "bgcolor": "#653"
@@ -678,7 +678,9 @@
         719222849,
         "randomize",
         true,
-        "sequential_blocks_aggressive"
+        "auto_low_vram",
+        "fp32_compatible",
+        0
       ]
     },
     {

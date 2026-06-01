@@ -144,7 +144,9 @@
         709929415,
         "randomize",
         true,
-        "sequential_blocks_aggressive"
+        "auto_low_vram",
+        "fp32_compatible",
+        0
       ]
     },
     {

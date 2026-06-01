@@ -13,13 +13,17 @@ if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
 from pid_decode import (  # noqa: E402
+    _log_cuda_peak_memory,
+    _log_pid_memory_plan,
     _load_pid_model,
     _normalize_pid_samples,
+    _reset_cuda_peak_memory_stats,
     _unload_pid_model,
     _free_cuda_memory,
-    _SequentialBlockOffloader,
     _make_pid_data_batch,
     _generate_samples_low_vram,
+    configure_pid_runtime,
+    resolve_pid_memory_plan,
 )
 
 
@@ -37,7 +41,9 @@ def main() -> int:
     parser.add_argument("--pid-steps", type=int, required=True)
     parser.add_argument("--cfg-scale", type=float, required=True)
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--sequential-offload", default="disabled")
+    parser.add_argument("--sequential-offload", default="auto_low_vram")
+    parser.add_argument("--pid-weight-precision", default="fp32_compatible")
+    parser.add_argument("--pixel-chunk-patches", type=int, default=0)
     parser.add_argument("--aggressive-cleanup", action="store_true")
     args = parser.parse_args()
 
@@ -47,6 +53,14 @@ def main() -> int:
             raise RuntimeError("CUDA GPU is required for PiD subprocess sampling.")
 
         _free_cuda_memory(aggressive=bool(args.aggressive_cleanup))
+        infer_image_size = tuple(int(x) for x in payload["infer_image_size"])
+        plan = resolve_pid_memory_plan(
+            sequential_offload=args.sequential_offload,
+            pid_weight_precision=args.pid_weight_precision,
+            pixel_chunk_patches=args.pixel_chunk_patches,
+            infer_image_size=infer_image_size,
+        )
+        _log_pid_memory_plan(plan)
 
         model = _load_pid_model(
             pid_dir=Path(payload["pid_dir"]),
@@ -56,6 +70,8 @@ def main() -> int:
             checkpoint_path=Path(payload["checkpoint_path"]),
             dtype_choice="bf16",
             load_ema_to_reg=False,
+            skip_vae_encoder=plan.skip_vae_encoder,
+            pid_weight_precision=plan.pid_weight_precision,
         )
 
         device = "cuda"
@@ -67,14 +83,10 @@ def main() -> int:
             payload.get("baseline_cpu"),
             device,
         )
-        infer_image_size = tuple(int(x) for x in payload["infer_image_size"])
-
-        offloader = None
-        sequential_offload = str(args.sequential_offload or "disabled").strip().lower()
-        if sequential_offload != "disabled":
-            offloader = _SequentialBlockOffloader(model, sequential_offload, device=device)
+        offloader = configure_pid_runtime(model, plan, device=device)
 
         _free_cuda_memory(aggressive=bool(args.aggressive_cleanup))
+        _reset_cuda_peak_memory_stats()
         with torch.inference_mode():
             out = _generate_samples_low_vram(
                 model,
@@ -85,6 +97,7 @@ def main() -> int:
                 shift=None,
                 image_size=infer_image_size,
             )
+        _log_cuda_peak_memory("subprocess decode")
 
         if offloader is not None:
             offloader.cleanup()

@@ -21,7 +21,7 @@ For the official latent-conditioned PiD checkpoints, this node can infer the bas
 - **PiD Sample** runs in a subprocess so CUDA memory is released after sampling.
 - **PiD KSampler Capture** for grabbing an intermediate latent and matching sigma.
 - Lazy setup: PiD source, checkpoints, and required assets are prepared on first run when `auto_download=true`.
-- Optional sequential block offload for lower VRAM at the cost of speed.
+- Exact low-VRAM pixel chunking and sequential block offload for large outputs.
 
 ## Install
 
@@ -91,7 +91,9 @@ sigma = 0.0
 auto_download = true
 unload_comfy_before_pid = true
 aggressive_cleanup = true
-sequential_offload = disabled
+sequential_offload = auto_low_vram
+pid_weight_precision = fp32_compatible
+pixel_chunk_patches = 0
 ```
 
 For official latent-conditioned checkpoints, leave `vae` and `baseline_image` disconnected unless you specifically need an external baseline size.
@@ -119,6 +121,35 @@ capture_step = 46
 
 `PiD Sample` runs in a separate Python process, so its CUDA context is destroyed after the sample is finished.
 
+Use these PiD Sample settings for minimum VRAM:
+
+```text
+sequential_offload = auto_low_vram
+pid_weight_precision = fp32_compatible
+pixel_chunk_patches = 0
+```
+
+`auto_low_vram` chunks the large pixel-block AdaLN and MLP tensors while preserving
+one global attention pass. It also keeps full-image positional data in system RAM.
+At 4096x4096 output, the positional cache uses approximately 1 GiB of RAM.
+
+Available offload policies:
+
+| Value | Behavior |
+| --- | --- |
+| `auto_low_vram` | Default minimum-VRAM policy with automatic chunk sizing. |
+| `disabled` | Legacy upstream behavior without PiD block offload or chunking. |
+| `sequential_blocks` | Balanced exact-output block offload with chunked pixel work. |
+| `sequential_blocks_aggressive` | Preserved for older workflows; now uses the improved low-VRAM policy. |
+
+`pixel_chunk_patches=0` selects the chunk size automatically. A 16 GiB GPU uses
+`4096` patches for a 4K output.
+
+`pid_weight_precision=bf16_weights_experimental` casts PiD network weights after
+load for additional savings. It is not the default because output changes. In the
+4K synthetic comparison, mean absolute delta was `0.04556` and RMSE was `0.07943`
+against `fp32_compatible`.
+
 ## Output size guide
 
 ```text
@@ -130,7 +161,7 @@ Large outputs can require a lot of VRAM. If a run fails, try:
 1. Lower `scale`.
 2. Use a smaller base latent.
 3. Keep cleanup options enabled.
-4. Try `sequential_blocks`, then `sequential_blocks_aggressive`.
+4. Keep `sequential_offload=auto_low_vram` and `pixel_chunk_patches=0`.
 5. Restart ComfyUI after CUDA allocator crashes.
 
 ## PiD source and weights

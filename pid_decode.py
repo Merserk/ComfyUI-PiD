@@ -47,6 +47,12 @@ PID_ZIP_URL = "https://github.com/nv-tlabs/PiD/archive/refs/heads/main.zip"
 HF_REPO_ID = "nvidia/PiD"
 AE_REL_PATH = "checkpoints/ae.safetensors"
 AE_FILENAME = "ae.safetensors"
+PID_REQUIRED_SOURCE_FILES = (
+    "pid/_src/configs/pid/experiment_2kto4k/sdxl.py",
+    "pid/_src/configs/pid/experiment_2kto4k/qwenimage.py",
+    "pid/_src/tokenizers/sdxl_vae.py",
+    "pid/_src/tokenizers/qwenimage_vae.py",
+)
 
 
 @dataclass(frozen=True)
@@ -113,12 +119,22 @@ PID_CKPTS: Dict[Tuple[str, str], PiDCheckpoint] = {
     ),
     ("flux2", "2kto4k"): PiDCheckpoint(
         experiment="PiD_res2kto4k_sr4x_official_flux2_distill_4step",
-        relpath="checkpoints/PiD_res2kto4k_sr4x_official_flux2_distill_4step/model_ema_bf16.pth",
+        relpath="checkpoints/PiD_res2kto4k_sr4x_official_flux2_distill_4step_2606/model_ema_bf16.pth",
         scale=4,
     ),
     ("sd3", "2kto4k"): PiDCheckpoint(
         experiment="PiD_res2kto4k_sr4x_official_sd3_distill_4step",
         relpath="checkpoints/PiD_res2kto4k_sr4x_official_sd3_distill_4step/model_ema_bf16.pth",
+        scale=4,
+    ),
+    ("sdxl", "2kto4k"): PiDCheckpoint(
+        experiment="PiD_res2kto4k_sr4x_official_sdxl_distill_4step",
+        relpath="checkpoints/PiD_res2kto4k_sr4x_official_sdxl_distill_4step/model_ema_bf16.pth",
+        scale=4,
+    ),
+    ("qwenimage", "2kto4k"): PiDCheckpoint(
+        experiment="PiD_res2kto4k_sr4x_official_qwenimage_distill_4step",
+        relpath="checkpoints/PiD_res2kto4k_sr4x_official_qwenimage_distill_4step/model_ema_bf16.pth",
         scale=4,
     ),
     ("zimage", "2kto4k"): PiDCheckpoint(
@@ -149,6 +165,33 @@ PID_BACKBONES: Dict[str, PiDBackbone] = {
         8,
         ("2k", "2kto4k"),
         aux_files=("checkpoints/sd3_vae/vae/diffusion_pytorch_model.safetensors",),
+    ),
+    "sdxl": PiDBackbone(
+        "SDXL",
+        "sdxl",
+        4,
+        4,
+        8,
+        ("2kto4k",),
+        aux_files=("checkpoints/sdxl_vae.safetensors",),
+    ),
+    "qwenimage": PiDBackbone(
+        "Qwen-Image",
+        "qwenimage",
+        16,
+        4,
+        8,
+        ("2kto4k",),
+        aux_files=("checkpoints/QwenImage_VAE_2d.pth",),
+    ),
+    "qwenimage-2512": PiDBackbone(
+        "Qwen-Image-2512",
+        "qwenimage",
+        16,
+        4,
+        8,
+        ("2kto4k",),
+        aux_files=("checkpoints/QwenImage_VAE_2d.pth",),
     ),
     "dinov2": PiDBackbone(
         "DINOv2 RAE",
@@ -503,9 +546,59 @@ def _pid_is_present(pid_dir: Path) -> bool:
     return (pid_dir / "pid" / "_src" / "utils" / "model_loader.py").is_file()
 
 
-def _ensure_pid_source(pid_dir: Path, allow_download: bool = True) -> List[str]:
+def _missing_pid_source_files(pid_dir: Path) -> List[str]:
+    return [relpath for relpath in PID_REQUIRED_SOURCE_FILES if not (pid_dir / relpath).is_file()]
+
+
+def _required_pid_source_files_for_backbone(backbone: str) -> Tuple[str, ...]:
+    if backbone == "sdxl":
+        return (
+            "pid/_src/configs/pid/experiment_2kto4k/sdxl.py",
+            "pid/_src/tokenizers/sdxl_vae.py",
+        )
+    if backbone in ("qwenimage", "qwenimage-2512"):
+        return (
+            "pid/_src/configs/pid/experiment_2kto4k/qwenimage.py",
+            "pid/_src/tokenizers/qwenimage_vae.py",
+        )
+    return ()
+
+
+def _missing_required_pid_source_files(pid_dir: Path, required_files: Tuple[str, ...]) -> List[str]:
+    return [relpath for relpath in required_files if not (pid_dir / relpath).is_file()]
+
+
+def _try_update_managed_pid_source(pid_dir: Path) -> List[str]:
+    messages: List[str] = []
+    if pid_dir.resolve() != DEFAULT_PID_DIR.resolve():
+        return messages
+    git = shutil.which("git")
+    if not git or not (pid_dir / ".git").is_dir():
+        return messages
+    messages.append(f"Updating bundled PiD source in {pid_dir} ...")
+    _run([git, "-C", str(pid_dir), "pull", "--ff-only"])
+    return messages
+
+
+def _ensure_pid_source(
+    pid_dir: Path,
+    allow_download: bool = True,
+    required_files: Tuple[str, ...] = (),
+) -> List[str]:
     messages: List[str] = []
     if _pid_is_present(pid_dir):
+        missing = _missing_required_pid_source_files(pid_dir, required_files)
+        if missing and allow_download:
+            messages.extend(_try_update_managed_pid_source(pid_dir))
+            missing = _missing_required_pid_source_files(pid_dir, required_files)
+        if missing:
+            missing_text = "\n".join(f"  - {pid_dir / relpath}" for relpath in missing)
+            raise PiDNodeError(
+                "The local NVIDIA PiD source is older than the selected backbone.\n"
+                "Update the PiD source checkout, or delete the bundled vendor/PiD folder "
+                "and run again with auto_download=true.\n\n"
+                f"Missing source files:\n{missing_text}"
+            )
         if str(pid_dir) not in sys.path:
             sys.path.insert(0, str(pid_dir))
         messages.append(f"PiD source found: {pid_dir}")
@@ -537,6 +630,10 @@ def _ensure_pid_source(pid_dir: Path, allow_download: bool = True) -> List[str]:
 
     if not _pid_is_present(pid_dir):
         raise PiDNodeError(f"PiD source download finished but expected files were not found under {pid_dir}")
+    missing = _missing_required_pid_source_files(pid_dir, required_files)
+    if missing:
+        missing_text = "\n".join(f"  - {pid_dir / relpath}" for relpath in missing)
+        raise PiDNodeError(f"PiD source download finished but selected-backbone files are missing:\n{missing_text}")
 
     if str(pid_dir) not in sys.path:
         sys.path.insert(0, str(pid_dir))
@@ -866,6 +963,10 @@ def _pid_asset_experiment_opts(model_dir: Path, backbone: str) -> List[str]:
         return [override("vae_pth", "checkpoints/flux2_ae.safetensors")]
     if backbone == "sd3":
         return [override("vae_pth", "checkpoints/sd3_vae/vae/diffusion_pytorch_model.safetensors")]
+    if backbone == "sdxl":
+        return [override("vae_pth", "checkpoints/sdxl_vae.safetensors")]
+    if backbone in ("qwenimage", "qwenimage-2512"):
+        return [override("vae_pth", "checkpoints/QwenImage_VAE_2d.pth")]
     if backbone == "dinov2":
         return [
             override("pretrained_path", f"huggingface/{DINOv2_SNAPSHOT.repo_id}"),
@@ -1601,7 +1702,7 @@ class PiDDecode:
         return {
             "required": {
                 "latent": ("LATENT",),
-                "caption": ("STRING", {"forceInput": True}),
+                "caption": ("STRING", {"multiline": True, "default": ""}),
                 # Use ComfyUI's canonical combo syntax.  The older
                 # ("COMBO", {"options": ...}) form can cause the frontend to
                 # rebuild widget_values with the first combo dropped after tab
@@ -1671,7 +1772,11 @@ class PiDDecode:
 
         pid_dir = _resolve_pid_dir(pid_source_dir)
         model_dir = _resolve_pid_model_dir()
-        _ensure_pid_source(pid_dir, allow_download=bool(auto_download))
+        _ensure_pid_source(
+            pid_dir,
+            allow_download=bool(auto_download),
+            required_files=_required_pid_source_files_for_backbone(backbone),
+        )
         _migrate_legacy_checkpoints(model_dir)
         checkpoint_path = _ensure_checkpoint(model_dir, backbone, pid_ckpt_type, allow_download=bool(auto_download))
         _ensure_backbone_assets(model_dir, backbone, allow_download=bool(auto_download))

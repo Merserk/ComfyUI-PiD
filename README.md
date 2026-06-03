@@ -63,10 +63,16 @@ Requirements:
 | `flux` | Flux | 16 | `2k`, `2kto4k` |
 | `flux2` | Flux2 | 128 | `2k`, `2kto4k` |
 | `sd3` | Stable Diffusion 3 | 16 | `2k`, `2kto4k` |
+| `sdxl` | Stable Diffusion XL | 4 | `2kto4k` |
+| `qwenimage` | Qwen-Image | 16 | `2kto4k` |
+| `qwenimage-2512` | Qwen-Image-2512 | 16 | `2kto4k` |
 | `dinov2` | DINOv2 RAE | 768 | `2k` |
 | `siglip` | SigLIP Scale-RAE | 1152 | `2k` |
 
 `scale=0` uses NVIDIA's default scale for the selected checkpoint: usually `4x`, or `8x` for SigLIP Scale-RAE.
+SDXL and Qwen-Image only ship NVIDIA's `2kto4k` PiD checkpoint. Flux2 `2kto4k`
+uses the newer `_2606` checkpoint, which replaces the older color-drifting
+release.
 
 ## Basic workflow
 
@@ -199,14 +205,17 @@ layout is:
 ```text
 ComfyUI/models/nvidia_pid/
   checkpoints/
+    sdxl_vae.safetensors                         # sdxl backbone only
+    QwenImage_VAE_2d.pth                         # qwenimage backbones only
   huggingface/
     Efficient-Large-Model/gemma-2-2b-it/
     facebook/dinov2-with-registers-base/        # dinov2 backbone only
     google/siglip2-so400m-patch14-224/          # siglip backbone only
 ```
 
-The Gemma snapshot is required for every PiD decode. The DINOv2 and SigLIP
-snapshots are only required when their matching backbones are selected.
+The Gemma snapshot is required for every PiD decode. The SDXL/Qwen VAE files,
+DINOv2 snapshot, and SigLIP snapshot are only required when their matching
+backbones are selected.
 
 To prepare an offline installation manually, clone NVIDIA's source while online
 and download the required models:

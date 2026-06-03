@@ -85,23 +85,6 @@ KSampler latent         -> PiD Decode latent
 PiD Decode image        -> Save Image
 ```
 
-Recommended first test settings:
-
-```text
-backbone = zimage
-pid_ckpt_type = 2k
-pid_steps = 4
-scale = 1 or 2
-cfg_scale = 1.0
-sigma = 0.0
-auto_download = true
-unload_comfy_before_pid = true
-aggressive_cleanup = true
-sequential_offload = auto_low_vram
-pid_weight_precision = fp32_compatible
-pixel_chunk_patches = 0
-```
-
 For official latent-conditioned checkpoints, leave `vae` and `baseline_image` disconnected unless you specifically need an external baseline size.
 
 ## Lowest-VRAM staged workflow

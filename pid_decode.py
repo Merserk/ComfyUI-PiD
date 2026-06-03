@@ -1601,7 +1601,13 @@ class PiDDecode:
         return {
             "required": {
                 "latent": ("LATENT",),
-                "caption": ("STRING", {"forceInput": True}),
+                # A normal (connectable) widget rather than forceInput: the
+                # frontend excludes forceInput STRING inputs from
+                # widgets_values (Comfy-Org/ComfyUI_frontend#3616), which
+                # shifts the index mapping of the widgets that follow so
+                # backbone/pid_ckpt_type reset to defaults on every reload.
+                # Convert-widget-to-input still lets an upstream prompt feed it.
+                "caption": ("STRING", {"multiline": True, "default": ""}),
                 # Use ComfyUI's canonical combo syntax.  The older
                 # ("COMBO", {"options": ...}) form can cause the frontend to
                 # rebuild widget_values with the first combo dropped after tab

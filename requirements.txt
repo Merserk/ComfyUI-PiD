@@ -17,8 +17,9 @@ opencv-python-headless
 pandas
 safetensors
 # Transformers 4.x is still the safest line for ComfyUI and SigLIP/Scale-RAE.
-# It expects huggingface-hub 0.x rather than the 1.x API line.
-huggingface-hub>=0.36.0,<1.0
+# Pin Hub to a known-good release because mismatched installs can crash ComfyUI at startup with:
+# ImportError: cannot import name 'is_offline_mode' from 'huggingface_hub'.
+huggingface-hub==0.36.0
 sentencepiece
 boto3
 botocore

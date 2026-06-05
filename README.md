@@ -2,7 +2,7 @@
 
 **ComfyUI custom nodes** for using NVIDIA **PiD** as a pixel diffusion decoder.
 
-<img width="1028" height="557" alt="Screenshot 2026-06-05 070514" src="https://github.com/user-attachments/assets/97ae4bf0-d995-4688-a173-844cfc46bc8a" />
+<img width="1058" height="604" alt="image" src="https://github.com/user-attachments/assets/cc5a9da3-94c6-4546-9574-c8387d5dffdb" />
 
 <img width="4096" height="2048" alt="1111111111111111" src="https://github.com/user-attachments/assets/7ccd55ee-e571-4996-9c9c-4b5cecbb4418" />
 

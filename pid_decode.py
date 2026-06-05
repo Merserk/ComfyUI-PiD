@@ -963,6 +963,40 @@ def _warn_if_non_distilled_step_count(pid_steps: int) -> None:
         )
 
 
+def _warn_if_qwen_bf16_precision(backbone: str, pid_weight_precision: str) -> None:
+    if (
+        str(backbone).strip() in ("qwenimage", "qwenimage-2512")
+        and str(pid_weight_precision or "").strip().lower() == "bf16_weights_experimental"
+    ):
+        print(
+            "[ComfyUI-PiD] warning: Qwen-Image PiD is running with "
+            "pid_weight_precision=bf16_weights_experimental. This option changes output; "
+            "use fp32_compatible for the recommended/reference behavior.",
+            flush=True,
+        )
+
+
+def _latent_pid_source_backbone(latent: dict) -> Optional[str]:
+    if not isinstance(latent, dict):
+        return None
+    source = latent.get("pid_source_backbone")
+    if source is None:
+        return None
+    source = str(source).strip().lower()
+    return source or None
+
+
+def _validate_latent_source_backbone(latent: dict, backbone: str) -> None:
+    source = _latent_pid_source_backbone(latent)
+    target = str(backbone).strip()
+    if source == "qwenimage" and target not in ("qwenimage", "qwenimage-2512"):
+        raise PiDNodeError(
+            "This latent was captured from a Qwen-Image model, but PiD is set to "
+            f"backbone={target!r}. Select the Qwen-Image PiD backbone "
+            "('qwenimage' or 'qwenimage-2512') for this latent."
+        )
+
+
 def _sdxl_vp_from_ve_latent(samples: torch.Tensor, sigma: float) -> Tuple[torch.Tensor, float]:
     """Convert SDXL Comfy/k-diffusion x_t from VE frame to PiD's VP frame.
 
@@ -1756,6 +1790,16 @@ def _latent_samples(latent: dict) -> torch.Tensor:
     samples = latent["samples"]
     if getattr(samples, "is_nested", False):
         samples = samples.unbind()[0]
+    if samples.ndim == 5:
+        if samples.shape[2] == 1:
+            samples = samples[:, :, 0, :, :]
+        elif samples.shape[1] == 1:
+            samples = samples[:, 0, :, :, :]
+        else:
+            raise PiDNodeError(
+                "Expected latent samples as [B,C,H,W], [B,C,1,H,W], or [B,1,C,H,W], "
+                f"got shape {list(samples.shape)}"
+            )
     if samples.ndim != 4:
         raise PiDNodeError(f"Expected latent samples as [B,C,H,W], got shape {list(samples.shape)}")
     return samples
@@ -1881,6 +1925,7 @@ class PiDDecode:
 
         if backbone not in PID_BACKBONES:
             raise PiDNodeError(f"Unknown backbone={backbone!r}; expected one of {BACKBONE_CHOICES}")
+        _validate_latent_source_backbone(latent, backbone)
         backbone_info = PID_BACKBONES[backbone]
         ckpt = _checkpoint_for(backbone, pid_ckpt_type)
         scale = _normalize_scale_for_checkpoint(backbone, ckpt, int(scale))
@@ -1918,6 +1963,7 @@ class PiDDecode:
             pixel_chunk_patches=pixel_chunk_patches,
             infer_image_size=infer_image_size,
         )
+        _warn_if_qwen_bf16_precision(backbone, plan.pid_weight_precision)
         _log_pid_memory_plan(plan)
 
         # Release Comfy's Z-Image/TE/VAE models before loading/running PiD.

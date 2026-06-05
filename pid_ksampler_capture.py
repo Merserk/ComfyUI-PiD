@@ -120,12 +120,57 @@ def _flowmatch_euler_discrete_sigmas(
     return sigmas
 
 
-def _copy_latent(latent: dict, samples: torch.Tensor, sigma: Optional[float] = None) -> dict:
+def _infer_pid_source_backbone(model) -> Optional[str]:
+    candidates = [model, getattr(model, "model", None)]
+    base_model = candidates[-1]
+    candidates.extend(
+        [
+            getattr(base_model, "model_config", None),
+            getattr(model, "model_config", None),
+            getattr(base_model, "diffusion_model", None),
+        ]
+    )
+    for obj in candidates:
+        if obj is None:
+            continue
+        class_name = obj.__class__.__name__.lower()
+        if "qwenimage" in class_name or "qwen_image" in class_name:
+            return "qwenimage"
+        unet_config = getattr(obj, "unet_config", None)
+        if isinstance(unet_config, dict):
+            image_model = str(unet_config.get("image_model", "")).strip().lower()
+            if image_model == "qwen_image":
+                return "qwenimage"
+        if "zimage" in class_name or "z_image" in class_name:
+            return "zimage"
+    return None
+
+
+def _validate_qwen_loader_options(model, source_backbone: Optional[str]) -> None:
+    if source_backbone != "qwenimage":
+        return
+    model_options = getattr(model, "model_options", None)
+    if isinstance(model_options, dict) and model_options.get("fp8_optimizations"):
+        raise RuntimeError(
+            "Qwen-Image PiD capture is not compatible with UNETLoader "
+            "weight_dtype='fp8_e4m3fn_fast'; it can produce speckled/artifact latents. "
+            "Set the Qwen diffusion model loader weight_dtype to 'default' and queue again."
+        )
+
+
+def _copy_latent(
+    latent: dict,
+    samples: torch.Tensor,
+    sigma: Optional[float] = None,
+    source_backbone: Optional[str] = None,
+) -> dict:
     out = latent.copy()
     out.pop("downscale_ratio_spacial", None)
     out["samples"] = samples
     if sigma is not None:
         out["pid_sigma"] = float(sigma)
+    if source_backbone:
+        out["pid_source_backbone"] = str(source_backbone)
     return out
 
 
@@ -175,6 +220,8 @@ class PiDKSamplerCapture:
         if comfy is None:
             raise RuntimeError("PiD KSampler Capture must run inside ComfyUI.")
 
+        source_backbone = _infer_pid_source_backbone(model)
+        _validate_qwen_loader_options(model, source_backbone)
         latent_samples = latent_image["samples"]
         latent_samples = comfy.sample.fix_empty_latent_channels(
             model,
@@ -270,8 +317,13 @@ class PiDKSamplerCapture:
             captured["samples"] = samples.detach().to("cpu").contiguous()
             captured["sigma"] = 0.0
 
-        final_latent = _copy_latent(latent_image, samples)
-        pid_latent = _copy_latent(latent_image, captured["samples"], captured["sigma"])
+        final_latent = _copy_latent(latent_image, samples, source_backbone=source_backbone)
+        pid_latent = _copy_latent(
+            latent_image,
+            captured["samples"],
+            captured["sigma"],
+            source_backbone=source_backbone,
+        )
         return (final_latent, pid_latent, float(captured["sigma"]))
 
 

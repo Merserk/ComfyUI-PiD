@@ -19,6 +19,7 @@ try:
         _free_cuda_memory,
         _make_pid_progress_bar,
         _update_pid_progress_bar,
+        _warn_if_qwen_bf16_precision,
         _warn_if_non_distilled_step_count,
     )
     from .pid_prepare import PID_PREP_TYPE, PiDPreparedBatch
@@ -31,6 +32,7 @@ except ImportError:  # pragma: no cover
         _free_cuda_memory,
         _make_pid_progress_bar,
         _update_pid_progress_bar,
+        _warn_if_qwen_bf16_precision,
         _warn_if_non_distilled_step_count,
     )
     from pid_prepare import PID_PREP_TYPE, PiDPreparedBatch
@@ -177,6 +179,7 @@ class PiDSample:
             del payload
             _free_cuda_memory(aggressive=True)
 
+            _warn_if_qwen_bf16_precision(prepared.backbone, pid_weight_precision)
             _warn_if_non_distilled_step_count(pid_steps)
             pbar = _make_pid_progress_bar(pid_steps)
             cmd = _build_pid_subprocess_command(

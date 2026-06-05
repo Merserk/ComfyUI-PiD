@@ -20,6 +20,7 @@ try:
         _ensure_backbone_assets,
         _latent_samples,
         _latent_pid_sigma,
+        _validate_latent_source_backbone,
         _infer_lq_size_from_latent,
         _free_cuda_memory,
         _normalize_scale_for_checkpoint,
@@ -40,6 +41,7 @@ except ImportError:  # pragma: no cover
         _ensure_backbone_assets,
         _latent_samples,
         _latent_pid_sigma,
+        _validate_latent_source_backbone,
         _infer_lq_size_from_latent,
         _free_cuda_memory,
         _normalize_scale_for_checkpoint,
@@ -104,6 +106,7 @@ class PiDPrepare:
         pid_ckpt_type = str(pid_ckpt_type).strip()
         if backbone not in PID_BACKBONES:
             raise PiDNodeError(f"Unknown backbone={backbone!r}; expected one of {BACKBONE_CHOICES}")
+        _validate_latent_source_backbone(latent, backbone)
         backbone_info = PID_BACKBONES[backbone]
         ckpt = _checkpoint_for(backbone, pid_ckpt_type)
         scale = _normalize_scale_for_checkpoint(backbone, ckpt, int(scale))

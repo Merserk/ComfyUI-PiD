@@ -115,6 +115,11 @@ Suggested capture settings by backbone:
 | `zimage` | 50 | 46 | captured latent | `euler` + `flowmatch_euler_discrete`, `flowmatch_shift=3.0` |
 | `zimage-turbo` | 9 | 7 optional | final `x0` | `euler` + `flowmatch_euler_discrete`, `flowmatch_shift=3.0` |
 
+For Qwen-Image workflows, keep the diffusion model `UNETLoader` `weight_dtype`
+set to `default`. ComfyUI's `fp8_e4m3fn_fast` path can produce speckled Qwen
+latents before PiD runs; `PiD KSampler Capture` rejects that combination with a
+clear error.
+
 `PiD Prepare` accepts only the PiD latent and caption as graph inputs; sigma comes from the captured latent when available or from the manual sigma widget.
 
 `PiD Sample` runs in a separate Python process, so its CUDA context is destroyed after the sample is finished.

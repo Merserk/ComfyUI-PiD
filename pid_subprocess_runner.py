@@ -13,6 +13,7 @@ if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
 from pid_decode import (  # noqa: E402
+    PID_PROGRESS_SENTINEL,
     _log_cuda_peak_memory,
     _log_pid_memory_plan,
     _load_pid_model,
@@ -34,6 +35,10 @@ def _torch_load(path: Path):
         return torch.load(str(path), map_location="cpu")
 
 
+def _emit_progress(current: int, total: int) -> None:
+    print(f"{PID_PROGRESS_SENTINEL} {int(current)} {int(total)}", flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run PiD sampling in a separate Python process.")
     parser.add_argument("--input", required=True)
@@ -45,6 +50,7 @@ def main() -> int:
     parser.add_argument("--pid-weight-precision", default="fp32_compatible")
     parser.add_argument("--pixel-chunk-patches", type=int, default=0)
     parser.add_argument("--aggressive-cleanup", action="store_true")
+    parser.add_argument("--progress", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -95,6 +101,7 @@ def main() -> int:
                 seed=int(args.seed),
                 shift=None,
                 image_size=infer_image_size,
+                progress_callback=_emit_progress if args.progress else None,
             )
         _log_cuda_peak_memory("subprocess decode")
 

@@ -13,18 +13,24 @@ import torch
 try:
     from .pid_decode import (
         PID_WEIGHT_PRECISION_CHOICES,
+        PID_PROGRESS_SENTINEL,
         SEQUENTIAL_OFFLOAD_CHOICES,
         PiDNodeError,
         _free_cuda_memory,
+        _make_pid_progress_bar,
+        _update_pid_progress_bar,
         _warn_if_non_distilled_step_count,
     )
     from .pid_prepare import PID_PREP_TYPE, PiDPreparedBatch
 except ImportError:  # pragma: no cover
     from pid_decode import (
         PID_WEIGHT_PRECISION_CHOICES,
+        PID_PROGRESS_SENTINEL,
         SEQUENTIAL_OFFLOAD_CHOICES,
         PiDNodeError,
         _free_cuda_memory,
+        _make_pid_progress_bar,
+        _update_pid_progress_bar,
         _warn_if_non_distilled_step_count,
     )
     from pid_prepare import PID_PREP_TYPE, PiDPreparedBatch
@@ -52,6 +58,7 @@ def _build_pid_subprocess_command(
     pid_weight_precision: str,
     pixel_chunk_patches: int,
     aggressive_cleanup: bool,
+    progress_enabled: bool = False,
 ):
     cmd = [
         sys.executable or "python",
@@ -75,7 +82,25 @@ def _build_pid_subprocess_command(
     ]
     if aggressive_cleanup:
         cmd.append("--aggressive-cleanup")
+    if progress_enabled:
+        cmd.append("--progress")
     return cmd
+
+
+def _parse_pid_progress_line(line: str):
+    if not line.startswith(PID_PROGRESS_SENTINEL):
+        return None
+    parts = line.strip().split()
+    if len(parts) != 3:
+        return None
+    try:
+        current = int(parts[1])
+        total = int(parts[2])
+    except ValueError:
+        return None
+    if total <= 0:
+        return None
+    return current, total
 
 
 class PiDSample:
@@ -153,6 +178,7 @@ class PiDSample:
             _free_cuda_memory(aggressive=True)
 
             _warn_if_non_distilled_step_count(pid_steps)
+            pbar = _make_pid_progress_bar(pid_steps)
             cmd = _build_pid_subprocess_command(
                 runner=runner,
                 input_path=input_path,
@@ -164,23 +190,43 @@ class PiDSample:
                 pid_weight_precision=pid_weight_precision,
                 pixel_chunk_patches=pixel_chunk_patches,
                 aggressive_cleanup=bool(aggressive_cleanup),
+                progress_enabled=pbar is not None,
             )
 
             env = os.environ.copy()
             node_dir = str(Path(__file__).resolve().parent)
             env["PYTHONPATH"] = node_dir + os.pathsep + env.get("PYTHONPATH", "")
-            proc = subprocess.run(
-                cmd,
-                cwd=node_dir,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
+            env["PYTHONUNBUFFERED"] = "1"
+
+            log_lines = []
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=node_dir,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                )
+            except OSError as exc:
+                raise PiDNodeError(f"Could not start PiD subprocess sampling: {exc}") from exc
+
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    parsed_progress = _parse_pid_progress_line(line)
+                    if parsed_progress is not None:
+                        current, total = parsed_progress
+                        _update_pid_progress_bar(pbar, current, total)
+                    elif not line.startswith(PID_PROGRESS_SENTINEL):
+                        log_lines.append(line.rstrip("\n"))
+            proc.wait()
+
+            subprocess_log = "\n".join(log_lines)
             if proc.returncode != 0 or not output_path.is_file():
-                tail = "\n".join((proc.stdout or "").splitlines()[-120:])
+                tail = "\n".join(subprocess_log.splitlines()[-120:])
                 raise PiDNodeError(
                     "PiD subprocess sampling failed. This usually means the 4K PiD pass still exceeded VRAM, "
                     "or the subprocess could not import/load PiD.\n\n"

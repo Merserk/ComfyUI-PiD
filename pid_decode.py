@@ -21,7 +21,7 @@ import zipfile
 from pathlib import Path
 from dataclasses import dataclass
 from types import MethodType
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 
@@ -29,6 +29,11 @@ try:
     import comfy.model_management as model_management
 except Exception:  # pragma: no cover - only available inside ComfyUI
     model_management = None
+
+try:
+    import comfy.utils as comfy_utils
+except Exception:  # pragma: no cover - only available inside ComfyUI
+    comfy_utils = None
 
 try:
     import folder_paths  # ComfyUI model path helper
@@ -44,6 +49,7 @@ DEFAULT_PID_MODEL_DIR = COMFYUI_DIR / "models" / "nvidia_pid"
 PID_REPO_URL = "https://github.com/nv-tlabs/PiD.git"
 PID_ZIP_URL = "https://github.com/nv-tlabs/PiD/archive/refs/heads/main.zip"
 HF_REPO_ID = "nvidia/PiD"
+PID_PROGRESS_SENTINEL = "__COMFYUI_PID_PROGRESS__"
 AE_REL_PATH = "checkpoints/ae.safetensors"
 AE_FILENAME = "ae.safetensors"
 PID_REQUIRED_SOURCE_FILES = (
@@ -1276,7 +1282,94 @@ def _enable_lazy_lq_projection(model: object) -> None:
     lq_proj._comfy_pid_lazy_lq = True
 
 
-def _generate_samples_low_vram(model: object, data_batch: dict, **kwargs):
+def _make_pid_progress_bar(pid_steps: int):
+    if comfy_utils is None or not getattr(comfy_utils, "PROGRESS_BAR_ENABLED", True):
+        return None
+    try:
+        steps = max(1, int(pid_steps))
+        return comfy_utils.ProgressBar(steps)
+    except Exception:
+        return None
+
+
+def _update_pid_progress_bar(pbar, current: int, total: int) -> None:
+    if pbar is None:
+        return
+    try:
+        total = max(1, int(total))
+        current = min(max(0, int(current)), total)
+        pbar.update_absolute(current, total)
+    except Exception:
+        pass
+
+
+class _PiDProgressNet:
+    def __init__(self, net: object, total_steps: int, progress_callback: Callable[[int, int], None], state: dict):
+        self._net = net
+        self._total_steps = max(1, int(total_steps))
+        self._progress_callback = progress_callback
+        self._state = state
+
+    def __getattr__(self, name: str):
+        return getattr(self._net, name)
+
+    def __call__(self, *args, **kwargs):
+        result = self._net(*args, **kwargs)
+        current = min(int(self._state.get("current", 0)) + 1, self._total_steps)
+        self._state["current"] = current
+        try:
+            self._progress_callback(current, self._total_steps)
+        except Exception:
+            pass
+        return result
+
+
+@contextlib.contextmanager
+def _pid_step_progress(model: object, total_steps: int, progress_callback: Optional[Callable[[int, int], None]]):
+    if progress_callback is None:
+        yield
+        return
+
+    try:
+        total_steps = max(1, int(total_steps))
+    except Exception:
+        yield
+        return
+
+    state = {"current": 0}
+    original_maybe_compile_net = getattr(model, "_maybe_compile_net", None)
+    if callable(original_maybe_compile_net):
+
+        def maybe_compile_net_with_progress(*args, **kwargs):
+            net = original_maybe_compile_net(*args, **kwargs)
+            return _PiDProgressNet(net, total_steps, progress_callback, state)
+
+        try:
+            setattr(model, "_maybe_compile_net", maybe_compile_net_with_progress)
+            yield
+        finally:
+            try:
+                setattr(model, "_maybe_compile_net", original_maybe_compile_net)
+            except Exception:
+                pass
+        return
+
+    original_net = getattr(model, "net", None)
+    if original_net is None:
+        yield
+        return
+
+    try:
+        setattr(model, "net", _PiDProgressNet(original_net, total_steps, progress_callback, state))
+        yield
+    finally:
+        try:
+            setattr(model, "net", original_net)
+        except Exception:
+            pass
+
+
+def _generate_samples_low_vram(model: object, data_batch: dict, progress_callback: Optional[Callable[[int, int], None]] = None, **kwargs):
     """Run PiD with text/VAE offload and lazy LQ conditioning."""
     _enable_lazy_lq_projection(model)
 
@@ -1289,7 +1382,9 @@ def _generate_samples_low_vram(model: object, data_batch: dict, **kwargs):
 
     original_encode = getattr(model, "_encode_text_raw", None)
     if not callable(original_encode):
-        return model.generate_samples_from_batch(batch, **kwargs)
+        total_steps = kwargs.get("num_steps", getattr(getattr(model, "config", None), "student_sample_steps", 1))
+        with _pid_step_progress(model, total_steps, progress_callback):
+            return model.generate_samples_from_batch(batch, **kwargs)
 
     def encode_then_offload(captions):
         text_encoder = getattr(model, "text_encoder", None)
@@ -1305,7 +1400,9 @@ def _generate_samples_low_vram(model: object, data_batch: dict, **kwargs):
 
     try:
         setattr(model, "_encode_text_raw", encode_then_offload)
-        return model.generate_samples_from_batch(batch, **kwargs)
+        total_steps = kwargs.get("num_steps", getattr(getattr(model, "config", None), "student_sample_steps", 1))
+        with _pid_step_progress(model, total_steps, progress_callback):
+            return model.generate_samples_from_batch(batch, **kwargs)
     finally:
         try:
             setattr(model, "_encode_text_raw", original_encode)
@@ -1859,6 +1956,11 @@ class PiDDecode:
         _reset_cuda_peak_memory_stats()
         try:
             _warn_if_non_distilled_step_count(pid_steps)
+            pbar = _make_pid_progress_bar(pid_steps)
+
+            def update_progress(current: int, total: int) -> None:
+                _update_pid_progress_bar(pbar, current, total)
+
             with torch.inference_mode():
                 out = _generate_samples_low_vram(
                     model,
@@ -1868,6 +1970,7 @@ class PiDDecode:
                     seed=int(seed),
                     shift=None,
                     image_size=infer_image_size,
+                    progress_callback=update_progress if pbar is not None else None,
                 )
             _log_cuda_peak_memory("direct decode")
         except Exception as exc:

@@ -77,34 +77,6 @@ SDXL and Qwen-Image only ship NVIDIA's `2kto4k` PiD checkpoint. Flux2 and Flux2-
 
 All currently released NVIDIA PiD checkpoints are 4-step distilled. The UI still allows other `pid_steps` and manual `scale` values for testing / low-VRAM debugging, but the official default is `pid_steps=4` and the checkpoint's native scale.
 
-## Basic workflow
-
-For Z-Image / Flux-style workflows:
-
-```text
-PiD Text Prompt text    -> CLIP Text Encode
-PiD Text Prompt caption -> PiD Decode caption
-KSampler latent         -> PiD Decode latent
-PiD Decode image        -> Save Image
-```
-
-Recommended first test settings:
-
-```text
-backbone = zimage
-pid_ckpt_type = 2k
-pid_steps = 4
-scale = 1 or 2
-cfg_scale = 1.0
-sigma = 0.0
-auto_download = true
-unload_comfy_before_pid = true
-aggressive_cleanup = true
-sequential_offload = auto_low_vram
-pid_weight_precision = fp32_compatible
-pixel_chunk_patches = 0
-```
-
 ## Lowest-VRAM staged workflow
 
 Use the staged nodes when VRAM is tight:

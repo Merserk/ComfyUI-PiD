@@ -6,6 +6,8 @@ Custom ComfyUI nodes for running NVIDIA PiD through ComfyUI's native PixelDiT/Pi
 
 <img width="4096" height="2048" alt="ComfyUI-PiD example output" src="https://github.com/user-attachments/assets/7ccd55ee-e571-4996-9c9c-4b5cecbb4418" />
 
+<img width="1361" height="562" alt="image" src="https://github.com/user-attachments/assets/ee881a77-3769-4ee1-bdbf-b65e97ba9773" />
+
 This version uses the Comfy-Org repackaged PiD models from:
 
 https://huggingface.co/Comfy-Org/PixelDiT

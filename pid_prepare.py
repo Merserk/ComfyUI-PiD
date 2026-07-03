@@ -22,6 +22,7 @@ try:
         _normalize_scale_for_checkpoint,
         _prepare_latent_for_pid_backbone,
         _validate_pid_base_resolution,
+        TEXT_ENCODER_VARIANTS,   # ← add this
     )
 except ImportError:  # pragma: no cover
     from pid_decode import (
@@ -76,6 +77,7 @@ class PiDPrepare:
                 "auto_download": ("BOOLEAN", {"default": True}),
                 "model_precision": (MODEL_PRECISION_CHOICES, {"default": "bf16"}),
                 "cleanup_after_prepare": ("BOOLEAN", {"default": True}),
+                "text_encoder_variant": (TEXT_ENCODER_VARIANTS, {"default": "default", "forceInput": False}),
                 "caption": ("STRING", {"forceInput": True}),
             },
         }
@@ -97,6 +99,7 @@ class PiDPrepare:
         model_precision: str = "bf16",
         cleanup_after_prepare: bool = True,
         pid_source_dir: str = "",
+        text_encoder_variant: str = "default",   # ← add this
     ):
         backbone = str(backbone).strip()
         pid_ckpt_type = str(pid_ckpt_type).strip()
@@ -108,6 +111,7 @@ class PiDPrepare:
         scale = _normalize_scale_for_checkpoint(backbone, ckpt, int(scale))
         diffusion_model_path, text_encoder_path = _ensure_native_pid_assets(
             ckpt,
+            text_encoder_variant=text_encoder_variant,   # ← add this
             allow_download=bool(auto_download),
         )
         del pid_source_dir

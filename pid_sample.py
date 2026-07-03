@@ -57,6 +57,7 @@ class PiDSample:
                 "cfg_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 20.0, "step": 0.1}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1}),
                 "aggressive_cleanup": ("BOOLEAN", {"default": True}),
+                "enable_torch_compile": (["disabled", "default", "max-autotune"], {"default": "disabled"}),
             }
         }
 
@@ -72,6 +73,7 @@ class PiDSample:
         cfg_scale: float,
         seed: int,
         aggressive_cleanup: bool = True,
+        enable_torch_compile: str = "disabled",   # ← ADD THIS
     ):
         if not isinstance(prepared, PiDPreparedBatch):
             raise PiDNodeError("PiD Sample expected a PID_PREP object from PiD Prepare.")
@@ -100,6 +102,7 @@ class PiDSample:
                 allow_download=False,
                 diffusion_model_path=Path(prepared.diffusion_model_path),
                 text_encoder_path=Path(prepared.text_encoder_path),
+                enable_torch_compile=enable_torch_compile,   # ← ADD THIS
                 progress_callback=update_progress if pbar is not None else None,
             )
             _log_cuda_peak_memory("staged native sample")

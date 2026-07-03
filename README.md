@@ -31,7 +31,7 @@ Most nodes can download required files automatically when `auto_download=true`.
 
 | Use | Source | Local folder |
 | --- | --- | --- |
-| PiD diffusion + Gemma text encoder | `Comfy-Org/PixelDiT` | `ComfyUI/models/diffusion_models/nvidia_pid/` and `ComfyUI/models/text_encoders/nvidia_pid/` |
+| PiD diffusion + Gemma text encoder | Comfy-Org/PixelDiT **or** `unsloth/gemma-2-2b-it-bnb-4bit` | `.../nvidia_pid/` | Use `text_encoder_variant="unsloth-4bit"` for lower VRAM (requires `bitsandbytes`) |
 | Caption Creator | `Qwen/Qwen3.5-0.8B` | `ComfyUI/models/text_encoders/nvidia_pid/qwen35_caption/` |
 | Upscale VAEs | Flux/Z-Image, Flux2, SD3 VAE files | `ComfyUI/models/vae/nvidia_pid/` |
 

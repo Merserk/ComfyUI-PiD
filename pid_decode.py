@@ -39,10 +39,16 @@ PIXELDIT_TEXT_ENCODER_FILES = {
     "bf16": "gemma_2_2b_it_elm_bf16.safetensors",
     "fp8": "gemma_2_2b_it_elm_fp8_scaled.safetensors",
 }
+# Optional alternate: Unsloth 4-bit Gemma (lower VRAM)
+UNSLOTH_GEMMA_REPO_ID = "unsloth/gemma-2-2b-it-bnb-4bit"
+UNSLOTH_GEMMA_FILENAME = "model.safetensors"
+TEXT_ENCODER_VARIANTS = ["default", "unsloth-4bit"]
 NATIVE_PID_SUBFOLDER = "nvidia_pid"
 PID_CKPT_TYPES = ["2k", "2kto4k"]
 MODEL_PRECISION_CHOICES = ["bf16", "fp8"]
 NATIVE_PID_STUDENT_T_LIST = (0.999, 0.866, 0.634, 0.342, 0.0)
+
+TORCH_COMPILE_MODES = ["disabled", "default", "max-autotune"]
 
 # These are the base/LDM image sizes that PiD will decode from.
 # Final PiD output is normally 4x these dimensions for the released LDM checkpoints.
@@ -70,7 +76,6 @@ PID_BASE_RESOLUTIONS: Dict[str, Tuple[Tuple[str, int, int], ...]] = {
         ("432x1008 (9:21)", 432, 1008),
     ),
 }
-
 
 class PiDNodeError(RuntimeError):
     pass
@@ -522,22 +527,56 @@ def _ensure_comfy_org_file(
         raise PiDNodeError(f"Hugging Face download finished but the model file is missing: {target}")
     return target
 
+def _ensure_text_encoder(
+    model_precision: str,
+    text_encoder_variant: str = "default",
+    allow_download: bool = True,
+) -> Path:
+    """Gemma text encoder loader with optional Unsloth 4-bit variant."""
+    if text_encoder_variant == "unsloth-4bit":
+        existing = _existing_model_file("text_encoders", UNSLOTH_GEMMA_FILENAME)
+        if existing and existing.is_file():
+            return existing
 
-def _ensure_native_pid_assets(spec: NativePiDModelSpec, allow_download: bool = True) -> Tuple[Path, Path]:
+        target_dir = _preferred_model_folder("text_encoders", NATIVE_PID_SUBFOLDER)
+        target = target_dir / UNSLOTH_GEMMA_FILENAME
+
+        if not target.is_file() and allow_download:
+            try:
+                from huggingface_hub import hf_hub_download
+            except ImportError:
+                raise PiDNodeError("auto_download requires huggingface-hub") from None
+
+            print(f"[ComfyUI-PiD] Downloading Unsloth 4-bit Gemma: {UNSLOTH_GEMMA_REPO_ID}")
+            target_dir.mkdir(parents=True, exist_ok=True)
+            cached = Path(hf_hub_download(repo_id=UNSLOTH_GEMMA_REPO_ID, filename=UNSLOTH_GEMMA_FILENAME))
+            shutil.copy2(cached, target)
+
+        if target.is_file():
+            try:
+                import bitsandbytes
+            except ImportError:
+                warnings.warn("bitsandbytes not installed — 4-bit loading may fail.", RuntimeWarning)
+            return target
+        raise PiDNodeError(f"Unsloth 4-bit Gemma not found at {target}")
+
+    # Default Comfy-Org
+    return _ensure_comfy_org_file(
+        "text_encoders",
+        "text_encoders",
+        PIXELDIT_TEXT_ENCODER_FILES[model_precision],
+        allow_download=allow_download,
+    )
+
+def _ensure_native_pid_assets(spec: NativePiDModelSpec, text_encoder_variant: str = "default", allow_download: bool = True) -> Tuple[Path, Path]:
     diffusion_path = _ensure_comfy_org_file(
         "diffusion_models",
         "diffusion_models",
         spec.diffusion_filename,
         allow_download=allow_download,
     )
-    text_encoder_path = _ensure_comfy_org_file(
-        "text_encoders",
-        "text_encoders",
-        spec.text_encoder_filename,
-        allow_download=allow_download,
-    )
+    text_encoder_path = _ensure_text_encoder(spec.model_precision, text_encoder_variant, allow_download)
     return diffusion_path, text_encoder_path
-
 
 def _load_native_pid_model(diffusion_model_path: Path):
     _require_comfy()
@@ -759,13 +798,22 @@ def _resolve_native_pid_paths(
 
 class _NativePiDSession:
     """Loaded native PiD model pair that can sample multiple tiles."""
-
-    def __init__(self, spec: NativePiDModelSpec, diffusion_path: Path, text_encoder_path: Path):
+    def __init__(self, spec: NativePiDModelSpec, diffusion_path: Path, text_encoder_path: Path, enable_torch_compile: str = "disabled"):
         self.spec = spec
         self.diffusion_path = Path(diffusion_path)
         self.text_encoder_path = Path(text_encoder_path)
         self.model = _load_native_pid_model(self.diffusion_path)
         self.clip = _load_pixeldit_clip(self.text_encoder_path)
+
+        # Apply torch.compile if requested
+        if enable_torch_compile != "disabled":
+            mode = None if enable_torch_compile == "default" else enable_torch_compile
+            print(f"[ComfyUI-PiD] Applying torch.compile (mode={mode}) to PiD model...")
+            try:
+                self.model = torch.compile(self.model, mode=mode, fullgraph=False)
+                print(f"[ComfyUI-PiD] torch.compile successful!")
+            except Exception as e:
+                print(f"[ComfyUI-PiD] torch.compile failed: {e}. Falling back to eager mode.")
 
     @classmethod
     def create(
@@ -775,6 +823,7 @@ class _NativePiDSession:
         allow_download: bool = True,
         diffusion_model_path: Optional[Path] = None,
         text_encoder_path: Optional[Path] = None,
+        enable_torch_compile: str = "disabled",
     ) -> "_NativePiDSession":
         diffusion_path, text_path = _resolve_native_pid_paths(
             spec,
@@ -782,7 +831,7 @@ class _NativePiDSession:
             diffusion_model_path=diffusion_model_path,
             text_encoder_path=text_encoder_path,
         )
-        return cls(spec, diffusion_path, text_path)
+        return cls(spec, diffusion_path, text_path, enable_torch_compile=enable_torch_compile)
 
     def close(self) -> None:
         self.clip = None
@@ -857,6 +906,7 @@ def _run_native_pid_decode(
     allow_download: bool = True,
     diffusion_model_path: Optional[Path] = None,
     text_encoder_path: Optional[Path] = None,
+    enable_torch_compile: str = "disabled",   # ← ADD THIS
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ):
     with _NativePiDSession.create(
@@ -864,6 +914,7 @@ def _run_native_pid_decode(
         allow_download=allow_download,
         diffusion_model_path=diffusion_model_path,
         text_encoder_path=text_encoder_path,
+        enable_torch_compile=enable_torch_compile,   # ← ADD THIS
     ) as session:
         return session.sample(
             caption,
@@ -914,6 +965,8 @@ class PiDDecode:
                 "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1}),
                 "auto_download": ("BOOLEAN", {"default": True}),
                 "model_precision": (MODEL_PRECISION_CHOICES, {"default": "bf16"}),
+                "enable_torch_compile": (TORCH_COMPILE_MODES, {"default": "disabled"}),
+                "text_encoder_variant": (TEXT_ENCODER_VARIANTS, {"default": "default"}),
                 "unload_comfy_before_pid": ("BOOLEAN", {"default": True}),
                 "aggressive_cleanup": ("BOOLEAN", {"default": True}),
                 "caption": ("STRING", {"forceInput": True}),
@@ -941,6 +994,8 @@ class PiDDecode:
         unload_comfy_before_pid: bool = True,
         aggressive_cleanup: bool = True,
         pid_source_dir: str = "",
+        text_encoder_variant: str = "default",   # ← ADD THIS LINE
+        enable_torch_compile: str = "disabled",
     ):
         del pid_source_dir
 
@@ -988,6 +1043,7 @@ class PiDDecode:
                 int(seed),
                 allow_download=bool(auto_download),
                 progress_callback=update_progress if pbar is not None else None,
+                enable_torch_compile=enable_torch_compile,   # ← ADD THIS
             )
             _log_cuda_peak_memory("direct native decode")
         except Exception as exc:

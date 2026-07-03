@@ -1,6 +1,11 @@
-# Native Comfy-Org PiD downloads and optional Qwen captioning.
-# Torch, safetensors, and ComfyUI runtime packages are provided by ComfyUI.
+# Core dependencies for ComfyUI-PiD (native backend)
 huggingface-hub>=0.36.0
 transformers>=5.0
 accelerate>=1.0
 Pillow>=10
+
+# Optional: 4-bit Unsloth Gemma support
+bitsandbytes>=0.44.0
+
+# Optional: Qwen caption creator
+# (already pulled in by transformers, but explicit for clarity)

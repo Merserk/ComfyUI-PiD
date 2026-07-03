@@ -55,6 +55,12 @@ except ImportError:  # pragma: no cover
         _update_pid_progress_bar,
     )
 
+# Optional alternate: Unsloth 4-bit Gemma (lower VRAM)
+UNSLOTH_GEMMA_REPO_ID = "unsloth/gemma-2-2b-it-bnb-4bit"
+UNSLOTH_GEMMA_FILENAME = "model.safetensors"
+TEXT_ENCODER_VARIANTS = ["default", "unsloth-4bit"]
+
+TORCH_COMPILE_MODES = ["disabled", "default", "max-autotune"]
 
 PID_UPSCALE_BACKBONES = [
     name for name, info in PID_BACKBONES.items()
@@ -559,8 +565,10 @@ class PiDUpscale:
                 "backbone": (PID_UPSCALE_BACKBONES, {"default": "flux"}),
                 "auto_download": ("BOOLEAN", {"default": True}),
                 "model_precision": (MODEL_PRECISION_CHOICES, {"default": "bf16"}),
+                "enable_torch_compile": (TORCH_COMPILE_MODES, {"default": "disabled"}),
                 "upscale_factor": (UPSCALE_FACTOR_CHOICES, {"default": "4x"}),
                 "strength": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.1, "round": 0.01}),
+                "text_encoder_variant": (TEXT_ENCODER_VARIANTS, {"default": "default"}),
             },
             "optional": {
                 "caption": ("STRING", {"forceInput": True}),
@@ -579,6 +587,8 @@ class PiDUpscale:
         backbone: str,
         auto_download: bool,
         model_precision: str = "bf16",
+        enable_torch_compile: str = "disabled",
+        text_encoder_variant: str = "default",
         upscale_factor: str = "4x",
         strength=0.4,
         caption: str = "",
@@ -621,7 +631,7 @@ class PiDUpscale:
         _reset_cuda_peak_memory_stats()
 
         try:
-            with _NativePiDSession.create(spec, allow_download=bool(auto_download)) as session:
+            with _NativePiDSession.create(spec, text_encoder_variant=text_encoder_variant, allow_download=bool(auto_download), enable_torch_compile=enable_torch_compile,) as session:
 
                 def run_pid_once(tile_image: torch.Tensor, seed: int) -> torch.Tensor:
                     nonlocal completed_steps

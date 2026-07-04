@@ -810,7 +810,14 @@ class _NativePiDSession:
             mode = None if enable_torch_compile == "default" else enable_torch_compile
             print(f"[ComfyUI-PiD] Applying torch.compile (mode={mode}) to PiD model...")
             try:
-                self.model = torch.compile(self.model, mode=mode, fullgraph=False)
+                # Try to compile the inner model (common in ComfyUI ModelPatcher)
+                if hasattr(self.model, "model") and hasattr(self.model.model, "forward"):
+                    self.model.model = torch.compile(self.model.model, mode=mode, fullgraph=False)
+                elif hasattr(self.model, "diffusion_model"):
+                    self.model.diffusion_model = torch.compile(self.model.diffusion_model, mode=mode, fullgraph=False)
+                else:
+                    # Fallback: try the top level
+                    self.model = torch.compile(self.model, mode=mode, fullgraph=False)
                 print(f"[ComfyUI-PiD] torch.compile successful!")
             except Exception as e:
                 print(f"[ComfyUI-PiD] torch.compile failed: {e}. Falling back to eager mode.")
@@ -823,6 +830,7 @@ class _NativePiDSession:
         allow_download: bool = True,
         diffusion_model_path: Optional[Path] = None,
         text_encoder_path: Optional[Path] = None,
+        text_encoder_variant: str = "default",   # ← MUST HAVE THIS
         enable_torch_compile: str = "disabled",
     ) -> "_NativePiDSession":
         diffusion_path, text_path = _resolve_native_pid_paths(

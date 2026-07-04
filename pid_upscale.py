@@ -588,7 +588,7 @@ class PiDUpscale:
         auto_download: bool,
         model_precision: str = "bf16",
         enable_torch_compile: str = "disabled",
-        text_encoder_variant: str = "default",
+        text_encoder_variant: str = "default",   # ← ADD THIS
         upscale_factor: str = "4x",
         strength=0.4,
         caption: str = "",
@@ -631,8 +631,12 @@ class PiDUpscale:
         _reset_cuda_peak_memory_stats()
 
         try:
-            with _NativePiDSession.create(spec, text_encoder_variant=text_encoder_variant, allow_download=bool(auto_download), enable_torch_compile=enable_torch_compile,) as session:
-
+            with _NativePiDSession.create(
+                spec,
+                text_encoder_variant=text_encoder_variant,
+                allow_download=bool(auto_download),
+                enable_torch_compile=enable_torch_compile,
+            ) as session:
                 def run_pid_once(tile_image: torch.Tensor, seed: int) -> torch.Tensor:
                     nonlocal completed_steps
                     result = _pid_upscale_once(

@@ -40,6 +40,8 @@ PiD v1 files are downloaded from `diffusion_models/`; v1.5 files are downloaded 
 
 Use `model_precision=bf16` for best quality. PiD v1 `fp8` is available only for Flux1-family `2k/2kto4k` and Flux2-family `2k`; Flux2 `2kto4k`, SD3, SDXL, and Qwen-Image must use `bf16`. PiD v1.5 supports `bf16` and `int8`; its INT8 ConvRot diffusion model uses the FP8 Gemma text encoder. Unsupported combinations produce an error and never fall back to another version.
 
+PiD selectors are compatibility-aware in the ComfyUI interface. Changing `version`, `backbone`, or `pid_ckpt_type` immediately removes unsupported downstream choices and normalizes an invalid current value to a supported one. For example, selecting `v1.5` removes `2k`, SD3/SDXL, and `fp8`, while enabling `int8`. `PiD Empty Latent Image` similarly hides SDXL and Qwen backbones in `2k` mode. Backend validation remains active for API prompts and older workflows.
+
 ## Nodes
 
 | Node | Output | Purpose |

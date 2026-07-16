@@ -1,4 +1,11 @@
 import { app } from "../../scripts/app.js";
+import {
+    PID_BACKBONES,
+    PID_UPSCALE_BACKBONES,
+    PID_VERSIONS,
+    normalizeEmptyLatentSelection,
+    normalizePidSelection,
+} from "./pid_compatibility.js";
 
 const RESOLUTION_CHOICES = {
     "2k": [
@@ -25,12 +32,141 @@ const RESOLUTION_CHOICES = {
     ],
 };
 
-const PID_VERSION_CHOICES = new Set(["v1", "v1.5"]);
+const PID_VERSION_CHOICES = new Set(PID_VERSIONS);
 const PID_VERSION_WIDGET_INDEX = {
     PiDDecode: 0,
     PiDPrepare: 0,
     PiDUpscale: 1,
 };
+
+const PID_COMPATIBILITY_NODE_CONFIG = {
+    PiDDecode: { allowedBackbones: PID_BACKBONES, defaultBackbone: "zimage" },
+    PiDPrepare: { allowedBackbones: PID_BACKBONES, defaultBackbone: "zimage" },
+    PiDUpscale: { allowedBackbones: PID_UPSCALE_BACKBONES, defaultBackbone: "flux" },
+};
+
+function arraysEqual(left, right) {
+    return Array.isArray(left)
+        && left.length === right.length
+        && left.every((value, index) => value === right[index]);
+}
+
+function setWidgetChoices(widget, choices) {
+    widget.options = widget.options ?? {};
+    const current = widget.options.values;
+    if (arraysEqual(current, choices)) {
+        return false;
+    }
+    widget.options.values = [...choices];
+    return true;
+}
+
+function setWidgetValue(widget, value) {
+    if (widget.value === value) {
+        return false;
+    }
+    widget.value = value;
+    return true;
+}
+
+function wrapWidgetCallback(widget, marker, update) {
+    if (!widget || widget[marker]) {
+        return;
+    }
+    widget[marker] = true;
+    const oldCallback = widget.callback;
+    widget.callback = function pidCompatibilityCallback(value, ...args) {
+        const result = oldCallback?.apply(this, [value, ...args]);
+        update();
+        return result;
+    };
+}
+
+function installPiDCompatibilityFiltering(node, nodeName) {
+    const config = PID_COMPATIBILITY_NODE_CONFIG[nodeName];
+    if (!config || node.__pidCompatibilityFilteringInstalled) {
+        return;
+    }
+    const widgets = Object.fromEntries((node.widgets ?? []).map((widget) => [widget.name, widget]));
+    const requiredNames = ["version", "backbone", "pid_ckpt_type", "model_precision"];
+    if (requiredNames.some((name) => !widgets[name])) {
+        return;
+    }
+
+    node.__pidCompatibilityFilteringInstalled = true;
+    const update = () => {
+        const normalized = normalizePidSelection(
+            {
+                version: widgets.version.value,
+                backbone: widgets.backbone.value,
+                pidCkptType: widgets.pid_ckpt_type.value,
+                modelPrecision: widgets.model_precision.value,
+            },
+            config,
+        );
+        let changed = false;
+        changed = setWidgetChoices(widgets.version, normalized.choices.version) || changed;
+        changed = setWidgetChoices(widgets.backbone, normalized.choices.backbone) || changed;
+        changed = setWidgetChoices(widgets.pid_ckpt_type, normalized.choices.pidCkptType) || changed;
+        changed = setWidgetChoices(widgets.model_precision, normalized.choices.modelPrecision) || changed;
+        changed = setWidgetValue(widgets.version, normalized.selection.version) || changed;
+        changed = setWidgetValue(widgets.backbone, normalized.selection.backbone) || changed;
+        changed = setWidgetValue(widgets.pid_ckpt_type, normalized.selection.pidCkptType) || changed;
+        changed = setWidgetValue(widgets.model_precision, normalized.selection.modelPrecision) || changed;
+        if (changed) {
+            node.setDirtyCanvas(true, true);
+        }
+    };
+
+    node.__pidUpdateCompatibility = update;
+    wrapWidgetCallback(widgets.version, "__pidCompatibilityVersionCallback", update);
+    wrapWidgetCallback(widgets.backbone, "__pidCompatibilityBackboneCallback", update);
+    wrapWidgetCallback(widgets.pid_ckpt_type, "__pidCompatibilityCheckpointCallback", update);
+    requestAnimationFrame(update);
+}
+
+function installEmptyLatentCompatibilityFiltering(node) {
+    if (node.__pidEmptyLatentCompatibilityInstalled) {
+        return;
+    }
+    const widgets = Object.fromEntries((node.widgets ?? []).map((widget) => [widget.name, widget]));
+    if (!widgets.pid_ckpt_type || !widgets.backbone) {
+        return;
+    }
+
+    node.__pidEmptyLatentCompatibilityInstalled = true;
+    const update = () => {
+        const normalized = normalizeEmptyLatentSelection({
+            pidCkptType: widgets.pid_ckpt_type.value,
+            backbone: widgets.backbone.value,
+        });
+        let changed = false;
+        changed = setWidgetChoices(widgets.pid_ckpt_type, normalized.choices.pidCkptType) || changed;
+        changed = setWidgetChoices(widgets.backbone, normalized.choices.backbone) || changed;
+        changed = setWidgetValue(widgets.pid_ckpt_type, normalized.selection.pidCkptType) || changed;
+        changed = setWidgetValue(widgets.backbone, normalized.selection.backbone) || changed;
+        if (changed) {
+            node.setDirtyCanvas(true, true);
+        }
+    };
+
+    node.__pidUpdateCompatibility = update;
+    wrapWidgetCallback(widgets.pid_ckpt_type, "__pidEmptyLatentCompatibilityCallback", update);
+    requestAnimationFrame(update);
+}
+
+function installCompatibilityConfigureRefresh(nodeType) {
+    if (nodeType.prototype.__pidCompatibilityConfigureRefreshInstalled) {
+        return;
+    }
+    nodeType.prototype.__pidCompatibilityConfigureRefreshInstalled = true;
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function pidCompatibilityOnConfigure(info, ...args) {
+        const result = onConfigure?.apply(this, [info, ...args]);
+        requestAnimationFrame(() => this.__pidUpdateCompatibility?.());
+        return result;
+    };
+}
 
 function installPiDVersionMigration(nodeType, nodeName) {
     const versionIndex = PID_VERSION_WIDGET_INDEX[nodeName];
@@ -112,44 +248,22 @@ function installUpscaleStrengthReset(node) {
 
 function installUpscaleDefaultReset(node) {
     const widgets = Object.fromEntries((node.widgets ?? []).map((widget) => [widget.name, widget]));
-    const requiredNames = ["pid_ckpt_type", "version", "backbone", "auto_download", "model_precision", "upscale_factor", "strength"];
+    const requiredNames = ["auto_download", "upscale_factor", "strength"];
     if (requiredNames.some((name) => !widgets[name]) || node.__pidUpscaleDefaultResetInstalled) {
         return;
     }
 
     node.__pidUpscaleDefaultResetInstalled = true;
 
-    const valid = {
-        pid_ckpt_type: new Set(["2k", "2kto4k"]),
-        version: PID_VERSION_CHOICES,
-        backbone: new Set(["zimage", "zimage-turbo", "flux", "flux2", "flux2-klein-4b", "flux2-klein-9b", "sd3"]),
-        model_precision: new Set(["bf16", "fp8", "int8"]),
-        upscale_factor: new Set(["2x", "4x", "6x", "8x"]),
-    };
+    const validUpscaleFactors = new Set(["2x", "4x", "6x", "8x"]);
 
     const resetInvalidValues = () => {
         let changed = false;
-        if (!valid.pid_ckpt_type.has(widgets.pid_ckpt_type.value)) {
-            widgets.pid_ckpt_type.value = "2k";
-            changed = true;
-        }
-        if (!valid.version.has(widgets.version.value)) {
-            widgets.version.value = "v1";
-            changed = true;
-        }
-        if (!valid.backbone.has(widgets.backbone.value)) {
-            widgets.backbone.value = "flux";
-            changed = true;
-        }
         if (typeof widgets.auto_download.value !== "boolean") {
             widgets.auto_download.value = true;
             changed = true;
         }
-        if (!valid.model_precision.has(widgets.model_precision.value)) {
-            widgets.model_precision.value = "bf16";
-            changed = true;
-        }
-        if (!valid.upscale_factor.has(widgets.upscale_factor.value)) {
+        if (!validUpscaleFactors.has(widgets.upscale_factor.value)) {
             widgets.upscale_factor.value = "4x";
             changed = true;
         }
@@ -183,6 +297,21 @@ app.registerExtension({
     name: "ComfyUI-PiD.Widgets",
     beforeRegisterNodeDef(nodeType, nodeData) {
         installPiDVersionMigration(nodeType, nodeData.name);
+
+        const compatibilityConfig = PID_COMPATIBILITY_NODE_CONFIG[nodeData.name];
+        if (compatibilityConfig || nodeData.name === "PiDEmptyLatentImage") {
+            installCompatibilityConfigureRefresh(nodeType);
+            const onNodeCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function pidCompatibilityOnNodeCreated(...args) {
+                const result = onNodeCreated?.apply(this, args);
+                if (nodeData.name === "PiDEmptyLatentImage") {
+                    installEmptyLatentCompatibilityFiltering(this);
+                } else {
+                    installPiDCompatibilityFiltering(this, nodeData.name);
+                }
+                return result;
+            };
+        }
 
         if (nodeData.name === "PiDEmptyLatentImage") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;

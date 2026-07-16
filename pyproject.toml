@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "comfyui-pid"
 description = "ComfyUI custom nodes for native Comfy-Org PiD pixel diffusion decoding."
-version = "0.9.0"
+version = "0.9.1"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dynamic = ["dependencies"]

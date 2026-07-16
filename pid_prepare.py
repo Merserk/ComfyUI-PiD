@@ -10,6 +10,7 @@ try:
         PID_BACKBONES,
         BACKBONE_CHOICES,
         MODEL_PRECISION_CHOICES,
+        PID_VERSION_CHOICES,
         PiDNodeError,
         _checkpoint_for,
         _ensure_native_pid_assets,
@@ -28,6 +29,7 @@ except ImportError:  # pragma: no cover
         PID_BACKBONES,
         BACKBONE_CHOICES,
         MODEL_PRECISION_CHOICES,
+        PID_VERSION_CHOICES,
         PiDNodeError,
         _checkpoint_for,
         _ensure_native_pid_assets,
@@ -48,6 +50,7 @@ PID_PREP_TYPE = "PID_PREP"
 
 @dataclass
 class PiDPreparedBatch:
+    version: str
     backbone: str
     pid_ckpt_type: str
     model_precision: str
@@ -69,6 +72,7 @@ class PiDPrepare:
         return {
             "required": {
                 "latent": ("LATENT",),
+                "version": (PID_VERSION_CHOICES, {"default": "v1"}),
                 "backbone": (BACKBONE_CHOICES, {"default": "zimage"}),
                 "pid_ckpt_type": (["2k", "2kto4k"], {"default": "2k"}),
                 "scale": ("INT", {"default": 0, "min": 0, "max": 8, "step": 1}),
@@ -95,6 +99,7 @@ class PiDPrepare:
         sigma: float,
         auto_download: bool,
         model_precision: str = "bf16",
+        version: str = "v1",
         cleanup_after_prepare: bool = True,
         pid_source_dir: str = "",
     ):
@@ -104,7 +109,7 @@ class PiDPrepare:
             raise PiDNodeError(f"Unknown backbone={backbone!r}; expected one of {BACKBONE_CHOICES}")
         _validate_latent_source_backbone(latent, backbone)
         backbone_info = PID_BACKBONES[backbone]
-        ckpt = _checkpoint_for(backbone, pid_ckpt_type, model_precision)
+        ckpt = _checkpoint_for(backbone, pid_ckpt_type, model_precision, version=version)
         scale = _normalize_scale_for_checkpoint(backbone, ckpt, int(scale))
         diffusion_model_path, text_encoder_path = _ensure_native_pid_assets(
             ckpt,
@@ -131,6 +136,7 @@ class PiDPrepare:
             _free_cuda_memory(aggressive=True)
 
         prepared = PiDPreparedBatch(
+            version=ckpt.version,
             backbone=backbone,
             pid_ckpt_type=pid_ckpt_type,
             model_precision=ckpt.model_precision,

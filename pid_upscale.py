@@ -23,6 +23,7 @@ try:
         MODEL_PRECISION_CHOICES,
         NATIVE_PID_SUBFOLDER,
         PID_BACKBONES,
+        PID_VERSION_CHOICES,
         PiDNodeError,
         _NativePiDSession,
         _checkpoint_for,
@@ -41,6 +42,7 @@ except ImportError:  # pragma: no cover
         MODEL_PRECISION_CHOICES,
         NATIVE_PID_SUBFOLDER,
         PID_BACKBONES,
+        PID_VERSION_CHOICES,
         PiDNodeError,
         _NativePiDSession,
         _checkpoint_for,
@@ -556,6 +558,7 @@ class PiDUpscale:
             "required": {
                 "image": ("IMAGE",),
                 "pid_ckpt_type": (PID_UPSCALE_CKPT_TYPES, {"default": "2k"}),
+                "version": (PID_VERSION_CHOICES, {"default": "v1"}),
                 "backbone": (PID_UPSCALE_BACKBONES, {"default": "flux"}),
                 "auto_download": ("BOOLEAN", {"default": True}),
                 "model_precision": (MODEL_PRECISION_CHOICES, {"default": "bf16"}),
@@ -579,6 +582,7 @@ class PiDUpscale:
         backbone: str,
         auto_download: bool,
         model_precision: str = "bf16",
+        version: str = "v1",
         upscale_factor: str = "4x",
         strength=0.4,
         caption: str = "",
@@ -599,7 +603,7 @@ class PiDUpscale:
         images = _ensure_image_batch(image)
         _, original_h, original_w, _ = images.shape
 
-        spec = _checkpoint_for(backbone, pid_ckpt_type, model_precision)
+        spec = _checkpoint_for(backbone, pid_ckpt_type, model_precision, version=version)
         if int(spec.scale) != PID_UPSCALE_NATIVE_SCALE:
             raise PiDNodeError(f"PiD Upscale expected a native 4x PiD checkpoint, got scale={spec.scale}.")
 
@@ -643,7 +647,8 @@ class PiDUpscale:
                 for batch_index, single_image in enumerate(images):
                     print(
                         f"[ComfyUI-PiD] PiD Upscale image {batch_index + 1}/{images.shape[0]}: "
-                        f"{original_w}x{original_h}, backbone={backbone}, pid_ckpt_type={pid_ckpt_type}, "
+                        f"{original_w}x{original_h}, version={spec.version}, backbone={backbone}, "
+                        f"pid_ckpt_type={pid_ckpt_type}, "
                         f"checkpoint={spec.diffusion_filename}, tile={profile.tile_size}, factor={factor}x, "
                         f"output={original_w * factor}x{original_h * factor}, caption_chars={len(caption)}, "
                         f"strength={strength} (sigma={sigma:g})",
@@ -665,14 +670,15 @@ class PiDUpscale:
             context = (
                 f"{exc}\n"
                 f"PiD Upscale context: input={original_w}x{original_h}, output={original_w * factor}x{original_h * factor}, "
-                f"backbone={backbone}, pid_ckpt_type={pid_ckpt_type}, checkpoint={spec.diffusion_filename}, "
+                f"version={spec.version}, backbone={backbone}, pid_ckpt_type={pid_ckpt_type}, "
+                f"checkpoint={spec.diffusion_filename}, "
                 f"tile={profile.tile_size}, overlap={profile.tile_overlap}, factor={factor}x, "
                 f"caption_chars={len(caption)}, strength={strength}, sigma={sigma:g}."
             )
             raise _format_pid_runtime_error(
                 RuntimeError(context),
                 infer_size,
-                f"{backbone}/{pid_ckpt_type}/{spec.diffusion_filename}",
+                f"{spec.version}/{backbone}/{pid_ckpt_type}/{spec.diffusion_filename}",
                 PID_UPSCALE_NATIVE_SCALE,
             ) from exc
         finally:

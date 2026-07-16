@@ -449,6 +449,7 @@
         "Node name for S&R": "PiDPrepare"
       },
       "widgets_values": [
+        "v1",
         "zimage",
         "2k",
         4,

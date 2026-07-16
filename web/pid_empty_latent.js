@@ -25,6 +25,30 @@ const RESOLUTION_CHOICES = {
     ],
 };
 
+const PID_VERSION_CHOICES = new Set(["v1", "v1.5"]);
+const PID_VERSION_WIDGET_INDEX = {
+    PiDDecode: 0,
+    PiDPrepare: 0,
+    PiDUpscale: 1,
+};
+
+function installPiDVersionMigration(nodeType, nodeName) {
+    const versionIndex = PID_VERSION_WIDGET_INDEX[nodeName];
+    if (versionIndex === undefined || nodeType.prototype.__pidVersionMigrationInstalled) {
+        return;
+    }
+
+    nodeType.prototype.__pidVersionMigrationInstalled = true;
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function pidVersionOnConfigure(info, ...args) {
+        const values = info?.widgets_values;
+        if (Array.isArray(values) && !PID_VERSION_CHOICES.has(values[versionIndex])) {
+            values.splice(versionIndex, 0, "v1");
+        }
+        return onConfigure?.apply(this, [info, ...args]);
+    };
+}
+
 function ratioFromLabel(label) {
     return String(label ?? "").match(/\(([^)]+)\)/)?.[1] ?? "1:1";
 }
@@ -88,7 +112,7 @@ function installUpscaleStrengthReset(node) {
 
 function installUpscaleDefaultReset(node) {
     const widgets = Object.fromEntries((node.widgets ?? []).map((widget) => [widget.name, widget]));
-    const requiredNames = ["pid_ckpt_type", "backbone", "auto_download", "model_precision", "upscale_factor", "strength"];
+    const requiredNames = ["pid_ckpt_type", "version", "backbone", "auto_download", "model_precision", "upscale_factor", "strength"];
     if (requiredNames.some((name) => !widgets[name]) || node.__pidUpscaleDefaultResetInstalled) {
         return;
     }
@@ -97,8 +121,9 @@ function installUpscaleDefaultReset(node) {
 
     const valid = {
         pid_ckpt_type: new Set(["2k", "2kto4k"]),
+        version: PID_VERSION_CHOICES,
         backbone: new Set(["zimage", "zimage-turbo", "flux", "flux2", "flux2-klein-4b", "flux2-klein-9b", "sd3"]),
-        model_precision: new Set(["bf16", "fp8"]),
+        model_precision: new Set(["bf16", "fp8", "int8"]),
         upscale_factor: new Set(["2x", "4x", "6x", "8x"]),
     };
 
@@ -106,6 +131,10 @@ function installUpscaleDefaultReset(node) {
         let changed = false;
         if (!valid.pid_ckpt_type.has(widgets.pid_ckpt_type.value)) {
             widgets.pid_ckpt_type.value = "2k";
+            changed = true;
+        }
+        if (!valid.version.has(widgets.version.value)) {
+            widgets.version.value = "v1";
             changed = true;
         }
         if (!valid.backbone.has(widgets.backbone.value)) {
@@ -153,6 +182,8 @@ function installCaptionPreview(node) {
 app.registerExtension({
     name: "ComfyUI-PiD.Widgets",
     beforeRegisterNodeDef(nodeType, nodeData) {
+        installPiDVersionMigration(nodeType, nodeData.name);
+
         if (nodeData.name === "PiDEmptyLatentImage") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function pidEmptyLatentOnNodeCreated(...args) {

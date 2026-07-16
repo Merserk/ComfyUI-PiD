@@ -38,10 +38,12 @@ COMFY_ORG_REPO_ID = "Comfy-Org/PixelDiT"
 PIXELDIT_TEXT_ENCODER_FILES = {
     "bf16": "gemma_2_2b_it_elm_bf16.safetensors",
     "fp8": "gemma_2_2b_it_elm_fp8_scaled.safetensors",
+    "int8": "gemma_2_2b_it_elm_fp8_scaled.safetensors",
 }
 NATIVE_PID_SUBFOLDER = "nvidia_pid"
 PID_CKPT_TYPES = ["2k", "2kto4k"]
-MODEL_PRECISION_CHOICES = ["bf16", "fp8"]
+PID_VERSION_CHOICES = ["v1", "v1.5"]
+MODEL_PRECISION_CHOICES = ["bf16", "fp8", "int8"]
 NATIVE_PID_STUDENT_T_LIST = (0.999, 0.866, 0.634, 0.342, 0.0)
 
 # These are the base/LDM image sizes that PiD will decode from.
@@ -89,12 +91,14 @@ class PiDBackbone:
 
 @dataclass(frozen=True)
 class NativePiDModelSpec:
+    version: str
     backbone: str
     label: str
     registry_key: str
     ckpt_type: str
     model_precision: str
     diffusion_filename: str
+    diffusion_repo_subdir: str
     text_encoder_filename: str
     latent_format: str
     latent_channels: int
@@ -107,7 +111,7 @@ class NativePiDModelSpec:
 
     @property
     def relpath(self) -> str:
-        return f"diffusion_models/{self.diffusion_filename}"
+        return f"{self.diffusion_repo_subdir}/{self.diffusion_filename}"
 
 
 PID_BACKBONES: Dict[str, PiDBackbone] = {
@@ -123,19 +127,25 @@ PID_BACKBONES: Dict[str, PiDBackbone] = {
     "qwenimage-2512": PiDBackbone("Qwen-Image-2512", "qwenimage", "qwenimage", 16, 4, 8, ("2kto4k",)),
 }
 
-PID_NATIVE_FILES: Dict[Tuple[str, str, str], str] = {
-    ("bf16", "flux1", "2k"): "pid_flux1_512_to_2048_4step_bf16.safetensors",
-    ("bf16", "flux1", "2kto4k"): "pid_flux1_1024_to_4096_4step_bf16.safetensors",
-    ("bf16", "flux2", "2k"): "pid_flux2_512_to_2048_4step_bf16.safetensors",
-    ("bf16", "flux2", "2kto4k"): "pid_flux2_1024_to_4096_4step_2606_bf16.safetensors",
-    ("bf16", "sd3", "2k"): "pid_sd3_512_to_2048_4step_bf16.safetensors",
-    ("bf16", "sd3", "2kto4k"): "pid_sd3_1024_to_4096_4step_bf16.safetensors",
-    ("bf16", "sdxl", "2kto4k"): "pid_sdxl_1024_to_4096_4step_bf16.safetensors",
-    ("bf16", "qwenimage", "2kto4k"): "pid_qwenimage_1024_to_4096_4step_bf16.safetensors",
-    ("fp8", "flux1", "2k"): "pid_flux1_512_to_2048_4step_mxfp8.safetensors",
-    ("fp8", "flux1", "2kto4k"): "pid_flux1_1024_to_4096_4step_mxfp8.safetensors",
-    ("fp8", "flux2", "2k"): "pid_flux2_512_to_2048_4step_mxfp8.safetensors",
-    ("fp8", "flux2", "2kto4k"): "pid_flux2_1024_to_4096_4step_mxfp8.safetensors",
+PID_NATIVE_FILES: Dict[Tuple[str, str, str, str], str] = {
+    ("v1", "bf16", "flux1", "2k"): "pid_flux1_512_to_2048_4step_bf16.safetensors",
+    ("v1", "bf16", "flux1", "2kto4k"): "pid_flux1_1024_to_4096_4step_bf16.safetensors",
+    ("v1", "bf16", "flux2", "2k"): "pid_flux2_512_to_2048_4step_bf16.safetensors",
+    ("v1", "bf16", "flux2", "2kto4k"): "pid_flux2_1024_to_4096_4step_2606_bf16.safetensors",
+    ("v1", "bf16", "sd3", "2k"): "pid_sd3_512_to_2048_4step_bf16.safetensors",
+    ("v1", "bf16", "sd3", "2kto4k"): "pid_sd3_1024_to_4096_4step_bf16.safetensors",
+    ("v1", "bf16", "sdxl", "2kto4k"): "pid_sdxl_1024_to_4096_4step_bf16.safetensors",
+    ("v1", "bf16", "qwenimage", "2kto4k"): "pid_qwenimage_1024_to_4096_4step_bf16.safetensors",
+    ("v1", "fp8", "flux1", "2k"): "pid_flux1_512_to_2048_4step_mxfp8.safetensors",
+    ("v1", "fp8", "flux1", "2kto4k"): "pid_flux1_1024_to_4096_4step_mxfp8.safetensors",
+    ("v1", "fp8", "flux2", "2k"): "pid_flux2_512_to_2048_4step_mxfp8.safetensors",
+    ("v1", "fp8", "flux2", "2kto4k"): "pid_flux2_1024_to_4096_4step_mxfp8.safetensors",
+    ("v1.5", "bf16", "flux1", "2kto4k"): "pid_1.5_flux1_1024_to_4096_4step_bf16.safetensors",
+    ("v1.5", "int8", "flux1", "2kto4k"): "pid_1.5_flux1_1024_to_4096_4step_int8_convrot.safetensors",
+    ("v1.5", "bf16", "flux2", "2kto4k"): "pid_1.5_flux2_1024_to_4096_4step_bf16.safetensors",
+    ("v1.5", "int8", "flux2", "2kto4k"): "pid_1.5_flux2_1024_to_4096_4step_int8_convrot.safetensors",
+    ("v1.5", "bf16", "qwenimage", "2kto4k"): "pid_1.5_qwenimage_1024_to_4096_4step_bf16.safetensors",
+    ("v1.5", "int8", "qwenimage", "2kto4k"): "pid_1.5_qwenimage_1024_to_4096_4step_int8_convrot.safetensors",
 }
 
 BACKBONE_CHOICES = list(PID_BACKBONES.keys())
@@ -267,7 +277,8 @@ def _log_pid_decode_plan(
     out_h, out_w = int(infer_image_size[0]), int(infer_image_size[1])
     print(
         "[ComfyUI-PiD] native decode plan: "
-        f"backbone={spec.backbone}, ckpt={spec.ckpt_type}, precision={spec.model_precision}, "
+        f"version={spec.version}, backbone={spec.backbone}, ckpt={spec.ckpt_type}, "
+        f"precision={spec.model_precision}, "
         f"model={spec.diffusion_filename}, latent_shape={list(latent_shape)}, "
         f"base={base_w}x{base_h}, output={out_w}x{out_h}, sigma={float(sigma):.6f}, "
         f"gpu_capacity={_vram_total_gb():.1f} GiB",
@@ -284,7 +295,20 @@ def _normalize_model_precision(model_precision: str) -> str:
     return precision
 
 
-def _checkpoint_for(backbone: str, ckpt_type: str, model_precision: str = "bf16") -> NativePiDModelSpec:
+def _normalize_pid_version(version: str) -> str:
+    version = str(version or "v1").strip().lower()
+    if version not in PID_VERSION_CHOICES:
+        raise PiDNodeError(f"Unknown version={version!r}; expected one of {PID_VERSION_CHOICES}")
+    return version
+
+
+def _checkpoint_for(
+    backbone: str,
+    ckpt_type: str,
+    model_precision: str = "bf16",
+    version: str = "v1",
+) -> NativePiDModelSpec:
+    version = _normalize_pid_version(version)
     backbone = str(backbone).strip()
     ckpt_type = str(ckpt_type).strip()
     model_precision = _normalize_model_precision(model_precision)
@@ -297,26 +321,47 @@ def _checkpoint_for(backbone: str, ckpt_type: str, model_precision: str = "bf16"
             f"{info.label} does not have a native Comfy-Org {ckpt_type!r} PiD model. "
             f"Supported pid_ckpt_type values: {supported}."
         )
-    if model_precision == "fp8" and info.registry_key == "flux2" and ckpt_type == "2kto4k":
+    if version == "v1.5":
+        if ckpt_type != "2kto4k":
+            raise PiDNodeError(
+                "PiD v1.5 is available only for pid_ckpt_type='2kto4k' (1024-to-4096). "
+                "Select version='v1' to use a 2k checkpoint."
+            )
+        if info.registry_key not in ("flux1", "flux2", "qwenimage"):
+            raise PiDNodeError(
+                f"PiD v1.5 does not provide a model for backbone={backbone!r}. "
+                "Supported v1.5 families are Flux1/Z-Image, Flux2/Flux2-Klein, and Qwen-Image."
+            )
+        if model_precision not in ("bf16", "int8"):
+            raise PiDNodeError(
+                "PiD v1.5 supports model_precision='bf16' or 'int8'. "
+                "The v1.5 repository does not provide FP8 diffusion checkpoints."
+            )
+    elif model_precision == "int8":
+        raise PiDNodeError(
+            "PiD v1 does not provide INT8 ConvRot checkpoints. "
+            "Use model_precision='bf16' or 'fp8', or select version='v1.5'."
+        )
+    if version == "v1" and model_precision == "fp8" and info.registry_key == "flux2" and ckpt_type == "2kto4k":
         raise PiDNodeError(
             "Flux2 / Flux2-Klein PiD 2kto4k must use model_precision='bf16'. "
             "The FP8/MXFP8 Comfy-Org Flux2 4K file maps to the older pre-_2606 checkpoint "
             "family that NVIDIA replaced because it can produce color drift/artifacts."
         )
     try:
-        filename = PID_NATIVE_FILES[(model_precision, info.registry_key, ckpt_type)]
+        filename = PID_NATIVE_FILES[(version, model_precision, info.registry_key, ckpt_type)]
     except KeyError as exc:
         if model_precision == "fp8":
             raise PiDNodeError(
                 f"Comfy-Org does not provide an FP8/mxfp8 PiD diffusion model for "
-                f"backbone={backbone!r}, pid_ckpt_type={ckpt_type!r}. "
+                f"version={version!r}, backbone={backbone!r}, pid_ckpt_type={ckpt_type!r}. "
                 "Use model_precision='bf16' for this combination."
             ) from exc
         raise PiDNodeError(
-            f"No native Comfy-Org PiD model registered for backbone={backbone!r}, "
+            f"No native Comfy-Org PiD model registered for version={version!r}, backbone={backbone!r}, "
             f"pid_ckpt_type={ckpt_type!r}, model_precision={model_precision!r}."
         ) from exc
-    if model_precision == "fp8" and info.registry_key == "flux1":
+    if version == "v1" and model_precision == "fp8" and info.registry_key == "flux1":
         warnings.warn(
             "PiD model_precision='fp8' uses MXFP8 Flux1/Z-Image PiD files and may produce "
             "visible white speckle on some systems. Use model_precision='bf16' for best quality.",
@@ -324,12 +369,14 @@ def _checkpoint_for(backbone: str, ckpt_type: str, model_precision: str = "bf16"
             stacklevel=2,
         )
     return NativePiDModelSpec(
+        version=version,
         backbone=backbone,
         label=info.label,
         registry_key=info.registry_key,
         ckpt_type=ckpt_type,
         model_precision=model_precision,
         diffusion_filename=filename,
+        diffusion_repo_subdir="diffusion_models/1.5" if version == "v1.5" else "diffusion_models",
         text_encoder_filename=PIXELDIT_TEXT_ENCODER_FILES[model_precision],
         latent_format=info.latent_format,
         latent_channels=info.latent_channels,
@@ -494,7 +541,8 @@ def _ensure_comfy_org_file(
     if existing is not None and existing.is_file():
         return existing
 
-    target_dir = _preferred_model_folder(folder_name, repo_subdir) / NATIVE_PID_SUBFOLDER
+    preferred_leaf = str(repo_subdir).replace("\\", "/").split("/", 1)[0]
+    target_dir = _preferred_model_folder(folder_name, preferred_leaf) / NATIVE_PID_SUBFOLDER
     target = target_dir / filename
     if target.is_file():
         return target
@@ -526,7 +574,7 @@ def _ensure_comfy_org_file(
 def _ensure_native_pid_assets(spec: NativePiDModelSpec, allow_download: bool = True) -> Tuple[Path, Path]:
     diffusion_path = _ensure_comfy_org_file(
         "diffusion_models",
-        "diffusion_models",
+        spec.diffusion_repo_subdir,
         spec.diffusion_filename,
         allow_download=allow_download,
     )
@@ -905,6 +953,7 @@ class PiDDecode:
         return {
             "required": {
                 "latent": ("LATENT",),
+                "version": (PID_VERSION_CHOICES, {"default": "v1"}),
                 "backbone": (BACKBONE_CHOICES, {"default": "zimage"}),
                 "pid_ckpt_type": (PID_CKPT_TYPES, {"default": "2k"}),
                 "pid_steps": ("INT", {"default": 4, "min": 1, "max": 64, "step": 1}),
@@ -938,6 +987,7 @@ class PiDDecode:
         seed: int,
         auto_download: bool,
         model_precision: str = "bf16",
+        version: str = "v1",
         unload_comfy_before_pid: bool = True,
         aggressive_cleanup: bool = True,
         pid_source_dir: str = "",
@@ -947,7 +997,7 @@ class PiDDecode:
         backbone = str(backbone).strip()
         pid_ckpt_type = str(pid_ckpt_type).strip()
         _validate_latent_source_backbone(latent, backbone)
-        spec = _checkpoint_for(backbone, pid_ckpt_type, model_precision)
+        spec = _checkpoint_for(backbone, pid_ckpt_type, model_precision, version=version)
         scale = _normalize_scale_for_checkpoint(backbone, spec, int(scale))
 
         samples = _latent_samples(latent)
@@ -995,7 +1045,7 @@ class PiDDecode:
             raise _format_pid_runtime_error(
                 exc,
                 infer_image_size,
-                f"{backbone}/{pid_ckpt_type}/{spec.diffusion_filename}",
+                f"{spec.version}/{backbone}/{pid_ckpt_type}/{spec.diffusion_filename}",
                 int(scale),
             ) from exc
 

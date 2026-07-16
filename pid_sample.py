@@ -84,7 +84,12 @@ class PiDSample:
             _update_pid_progress_bar(pbar, current, total)
 
         infer_image_size = tuple(int(x) for x in prepared.infer_image_size)
-        spec = _checkpoint_for(prepared.backbone, prepared.pid_ckpt_type, getattr(prepared, "model_precision", "bf16"))
+        spec = _checkpoint_for(
+            prepared.backbone,
+            prepared.pid_ckpt_type,
+            getattr(prepared, "model_precision", "bf16"),
+            version=getattr(prepared, "version", "v1"),
+        )
 
         _reset_cuda_peak_memory_stats()
         try:
@@ -108,7 +113,7 @@ class PiDSample:
             raise _format_pid_runtime_error(
                 exc,
                 infer_image_size,
-                f"{prepared.backbone}/{prepared.pid_ckpt_type}/{spec.diffusion_filename}",
+                f"{spec.version}/{prepared.backbone}/{prepared.pid_ckpt_type}/{spec.diffusion_filename}",
                 int(prepared.scale),
             ) from exc
 

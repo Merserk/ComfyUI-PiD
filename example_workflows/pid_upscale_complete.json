@@ -107,6 +107,7 @@
       },
       "widgets_values": [
         "2k",
+        "v1",
         "flux",
         true,
         "bf16",

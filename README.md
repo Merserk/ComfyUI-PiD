@@ -23,7 +23,7 @@ python -m pip install -r requirements.txt
 
 Restart ComfyUI.
 
-Requirements: recent ComfyUI with native PixelDiT/PiD support, Python `>=3.10`, NVIDIA CUDA GPU recommended.
+Requirements: recent ComfyUI with native PixelDiT/PiD support, Python `>=3.10`, NVIDIA CUDA GPU recommended. PiD v1.5 requires ComfyUI `0.28.0` or newer.
 
 ## Models
 
@@ -32,10 +32,13 @@ Most nodes can download required files automatically when `auto_download=true`.
 | Use | Source | Local folder |
 | --- | --- | --- |
 | PiD diffusion + Gemma text encoder | `Comfy-Org/PixelDiT` | `ComfyUI/models/diffusion_models/nvidia_pid/` and `ComfyUI/models/text_encoders/nvidia_pid/` |
+| PixelDiT text-to-image generation | `Comfy-Org/PixelDiT` | `ComfyUI/models/diffusion_models/nvidia_pid/` and `ComfyUI/models/text_encoders/nvidia_pid/` |
 | Caption Creator | `Qwen/Qwen3.5-0.8B` | `ComfyUI/models/text_encoders/nvidia_pid/qwen35_caption/` |
 | Upscale VAEs | Flux/Z-Image, Flux2, SD3 VAE files | `ComfyUI/models/vae/nvidia_pid/` |
 
-Use `model_precision=bf16` for best quality. `fp8` is available only for Flux1-family `2k/2kto4k` and Flux2-family `2k`; Flux2 `2kto4k`, SD3, SDXL, and Qwen-Image must use `bf16`.
+PiD v1 files are downloaded from `diffusion_models/`; v1.5 files are downloaded from `diffusion_models/1.5/`. Both are stored in the flat local `ComfyUI/models/diffusion_models/nvidia_pid/` folder because v1.5 filenames include their version.
+
+Use `model_precision=bf16` for best quality. PiD v1 `fp8` is available only for Flux1-family `2k/2kto4k` and Flux2-family `2k`; Flux2 `2kto4k`, SD3, SDXL, and Qwen-Image must use `bf16`. PiD v1.5 supports `bf16` and `int8`; its INT8 ConvRot diffusion model uses the FP8 Gemma text encoder. Unsupported combinations produce an error and never fall back to another version.
 
 ## Nodes
 
@@ -50,29 +53,54 @@ Use `model_precision=bf16` for best quality. `fp8` is available only for Flux1-f
 | **PiD Sample** | `PID_SAMPLES` | Runs native PiD sampling. |
 | **PiD Finalize** | `IMAGE` | Converts PiD samples to a ComfyUI image. |
 | **PiD Upscale** | `IMAGE` | Image-only tiled PiD upscaler with `2x/4x/6x/8x` output. |
+| **PixelDiT Generate** | `IMAGE` | VAE-free 1024-class text-to-image generation with native PixelDiT. |
 
 Recommended PiD sampling: `pid_steps=4`, `cfg_scale=1.0`, `scale=0` or `4`.
 
+## PixelDiT Generate
+
+`PixelDiT Generate` creates images directly in RGB pixel space. It does not load or run a traditional VAE. Connect the `text` output from `PiD Text Prompt`, select a precision and resolution, then connect the generated `IMAGE` to `Save Image`.
+
+| Setting | Values / behavior |
+| --- | --- |
+| `model_precision` | `bf16` uses the BF16 diffusion model and Gemma encoder; `fp8` uses the MXFP8 diffusion model and FP8 Gemma encoder. |
+| `resolution` | Eight approximately one-megapixel presets from `1024x1024` through portrait, widescreen, and ultrawide formats. |
+| `steps` | Default `30`, matching the official ComfyUI PixelDiT workflow. |
+| `cfg_scale` | Default `4.0`. |
+| `sampler_name` / `scheduler` | Default `er_sde` / `simple`. |
+| `negative_prompt` | Defaults to NVIDIA/ComfyUI's recommended quality exclusions. |
+
+Generation models are downloaded automatically when enabled:
+
+```text
+pixeldit_1300m_1024px_bf16.safetensors
+pixeldit_1300m_1024px_mxfp8.safetensors
+```
+
+PixelDiT generation requires ComfyUI `0.28.0` or newer. The NVIDIA model weights use the NSCLv1 license and are limited to non-commercial research/evaluation use.
+
 ## Supported Backbones
 
-| Backbone value | PiD family | Checkpoints | Latent | PiD Upscale |
-| --- | --- | --- | --- | --- |
-| `zimage` | Flux1 | `2k`, `2kto4k` | 16ch / 8x | yes |
-| `zimage-turbo` | Flux1 | `2k`, `2kto4k` | 16ch / 8x | yes |
-| `flux` | Flux1 | `2k`, `2kto4k` | 16ch / 8x | yes |
-| `flux2` | Flux2 | `2k`, `2kto4k` | 128ch / 16x | yes |
-| `flux2-klein-4b` | Flux2 | `2k`, `2kto4k` | 128ch / 16x | yes |
-| `flux2-klein-9b` | Flux2 | `2k`, `2kto4k` | 128ch / 16x | yes |
-| `sd3` | SD3 | `2k`, `2kto4k` | 16ch / 8x | yes |
-| `sdxl` | SDXL | `2kto4k` only | 4ch / 8x | no |
-| `qwenimage` | Qwen-Image | `2kto4k` only | 16ch / 8x | no |
-| `qwenimage-2512` | Qwen-Image | `2kto4k` only | 16ch / 8x | no |
+| Backbone value | PiD family | Versions | Checkpoints | Latent | PiD Upscale |
+| --- | --- | --- | --- | --- | --- |
+| `zimage` | Flux1 | v1, v1.5 | v1: `2k`/`2kto4k`; v1.5: `2kto4k` | 16ch / 8x | yes |
+| `zimage-turbo` | Flux1 | v1, v1.5 | v1: `2k`/`2kto4k`; v1.5: `2kto4k` | 16ch / 8x | yes |
+| `flux` | Flux1 | v1, v1.5 | v1: `2k`/`2kto4k`; v1.5: `2kto4k` | 16ch / 8x | yes |
+| `flux2` | Flux2 | v1, v1.5 | v1: `2k`/`2kto4k`; v1.5: `2kto4k` | 128ch / 16x | yes |
+| `flux2-klein-4b` | Flux2 | v1, v1.5 | v1: `2k`/`2kto4k`; v1.5: `2kto4k` | 128ch / 16x | yes |
+| `flux2-klein-9b` | Flux2 | v1, v1.5 | v1: `2k`/`2kto4k`; v1.5: `2kto4k` | 128ch / 16x | yes |
+| `sd3` | SD3 | v1 | `2k`, `2kto4k` | 16ch / 8x | yes |
+| `sdxl` | SDXL | v1 | `2kto4k` only | 4ch / 8x | no |
+| `qwenimage` | Qwen-Image | v1, v1.5 | `2kto4k` only | 16ch / 8x | no |
+| `qwenimage-2512` | Qwen-Image | v1, v1.5 | `2kto4k` only | 16ch / 8x | no |
 
 `dinov2` and `siglip` are not supported by the native Comfy-Org PiD model set.
 
 ## Output Size Guide
 
 Released PiD checkpoints use native `4x` scale.
+
+PiD v1 supports the rows shown below. PiD v1.5 provides only the `2kto4k` profile.
 
 | `pid_ckpt_type` | Base latent/image size | Final PiD output | Valid base presets |
 | --- | --- | --- | --- |
@@ -88,8 +116,9 @@ Latent size depends on backbone downscale. Example: Flux2 `1024x1024` uses a `12
 | Setting | Values / behavior |
 | --- | --- |
 | `pid_ckpt_type` | `2k` uses 512px tiles; `2kto4k` uses 1024px tiles. |
+| `version` | `v1` supports `2k` and `2kto4k`; `v1.5` supports only `2kto4k` and only Flux1/Flux2-family backbones. |
 | `backbone` | `zimage`, `zimage-turbo`, `flux`, `flux2`, `flux2-klein-4b`, `flux2-klein-9b`, `sd3`. |
-| `model_precision` | Same limits as PiD decode; use `bf16` for best quality. |
+| `model_precision` | v1 uses `bf16`/supported `fp8`; v1.5 uses `bf16` or INT8 ConvRot. Use `bf16` for best quality. |
 | `upscale_factor` | Final output size: `2x`, `4x`, `6x`, or `8x`. |
 | `strength` | PiD detail regeneration sigma, `0.0` to `1.0`; default `0.4`. |
 | `caption` | Optional string input; connect `PiD Caption Creator` or `PiD Text Prompt`. |
@@ -132,6 +161,12 @@ PiD KSampler Capture pid_latent + pid_sigma -> PiD Prepare
 PiD Prepare -> PiD Sample -> PiD Finalize -> Save Image
 ```
 
+### VAE-free PixelDiT generation
+
+```text
+PiD Text Prompt -> PixelDiT Generate -> Save Image
+```
+
 ### Direct decode
 
 ```text
@@ -168,8 +203,9 @@ pid_zimage_turbo_complete.json
 pid_image_to_image_2k_complete.json
 pid_image_to_image_2kto4k_complete.json
 pid_upscale_complete.json
+pid_pixeldit_generate_complete.json
 ```
 
 ## License
 
-MIT
+The ComfyUI-PiD node code is MIT licensed. PixelDiT/PiD model weights are distributed separately under NVIDIA's NSCLv1 license.

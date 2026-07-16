@@ -417,6 +417,7 @@
         "Node name for S&R": "PiDPrepare"
       },
       "widgets_values": [
+        "v1",
         "sd3",
         "2k",
         4,

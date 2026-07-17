@@ -36,7 +36,7 @@ Most nodes can download required files automatically when `auto_download=true`.
 | Caption Creator | `Qwen/Qwen3.5-0.8B` | `ComfyUI/models/text_encoders/nvidia_pid/qwen35_caption/` |
 | Upscale VAEs | Flux/Z-Image, Flux2, SD3 VAE files | `ComfyUI/models/vae/nvidia_pid/` |
 
-PiD v1 files are downloaded from `diffusion_models/`; v1.5 files are downloaded from `diffusion_models/1.5/`. Both are stored in the flat local `ComfyUI/models/diffusion_models/nvidia_pid/` folder because v1.5 filenames include their version.
+PiD v1 and v1.5 files are downloaded from `diffusion_models/`. They are stored in the flat local `ComfyUI/models/diffusion_models/nvidia_pid/` folder; v1.5 filenames already include their version.
 
 Use `model_precision=bf16` for best quality. PiD v1 `fp8` is available only for Flux1-family `2k/2kto4k` and Flux2-family `2k`; Flux2 `2kto4k`, SD3, SDXL, and Qwen-Image must use `bf16`. PiD v1.5 supports `bf16` and `int8`; its INT8 ConvRot diffusion model uses the FP8 Gemma text encoder. Unsupported combinations produce an error and never fall back to another version.
 

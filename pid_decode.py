@@ -376,7 +376,8 @@ def _checkpoint_for(
         ckpt_type=ckpt_type,
         model_precision=model_precision,
         diffusion_filename=filename,
-        diffusion_repo_subdir="diffusion_models/1.5" if version == "v1.5" else "diffusion_models",
+        # Comfy-Org flattened the v1.5 checkpoints into diffusion_models/ in July 2026.
+        diffusion_repo_subdir="diffusion_models",
         text_encoder_filename=PIXELDIT_TEXT_ENCODER_FILES[model_precision],
         latent_format=info.latent_format,
         latent_channels=info.latent_channels,
